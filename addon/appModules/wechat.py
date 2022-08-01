@@ -21,7 +21,6 @@ class AppModule(appModuleHandler.AppModule):
 	isAutoMSG = config.conf["WeChatEnhancement"]["isAutoMSG"]
 
 	def event_NVDAObject_init(self, obj):
-		# 修正微信的控件浏览光标不能获取到信息
 		if role.EDITABLETEXT != obj.role:
 			obj.displayText = obj.name
 			obj.TextInfo = NVDAObjectTextInfo
@@ -43,30 +42,21 @@ class AppModule(appModuleHandler.AppModule):
 		nextHandler()
 
 	def event_gainFocus(self, obj, nextHandler, isFocus=False):
-		# 为特殊聊天消息增加提示
 		if obj.role==role.LISTITEM and obj.parent.name=='消息':
 			if obj.value !=None: 			playWaveFile(self.SOUND_LINK)
-
-		# 处理发送按钮的标签
 		if obj.role==role.BUTTON and obj.name=='sendBtn':
 			obj.name='发送(S)'
-		# 网络错误提示
 		if 'NetErrInfoTipsBarWnd' == obj.windowClassName:
 			ui.message (obj.displayText)
 			return
-		# 处理微信列表的朗读
 		if obj.name==None:
-			# 复选框
 			if obj.role==role.CHECKBOX:
 				ui.message(obj.simpleFirstChild.name)
-			# 列表项
 			if obj.role==role.LISTITEM:
 				children = obj.recursiveDescendants
 				for child in children:
 					if child.role==role.CHECKBOX: speech.speakObject(child)
 					elif not speech.isBlank(child.name): ui.message(child.name)
-		# 处理订阅号文章评论的朗读
-		# 请在 wechatbrowser.py 中导入 AppModule
 		elif obj.treeInterceptor and obj.role==role.LIST and 'discuss_list' == obj.IA2Attributes.get('class'):
 			o=obj.firstChild.firstChild
 			while o:
