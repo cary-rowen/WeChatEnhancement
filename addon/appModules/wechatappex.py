@@ -1,0 +1,1 @@
+from .wechatapp import AppModule
