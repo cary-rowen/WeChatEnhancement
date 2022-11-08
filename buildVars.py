@@ -25,7 +25,7 @@ addon_info = {
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
 	"addon_description": _("""增强 PC微信的使用体验，修复因PC微信无障碍缺陷导致的多处列表项朗读问题，支持朗读公众号留言，修正错误的按钮标签，添加快速键等。"""),
 	# version
-	"addon_version": "1.2",
+	"addon_version": "1.4-Dev",
 	# Author(s)
 	"addon_author": "沉浮, Eureka",
 	# URL for the add-on documentation support

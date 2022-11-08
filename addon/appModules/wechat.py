@@ -3,6 +3,9 @@ import appModuleHandler
 import speech
 import config
 import ui
+import api
+import eventHandler
+import winUser
 import controlTypes
 from NVDAObjects import NVDAObjectTextInfo
 from versionInfo import version_year
@@ -44,6 +47,11 @@ class AppModule(appModuleHandler.AppModule):
 	def event_gainFocus(self, obj, nextHandler, isFocus=False):
 		if obj.role==role.LISTITEM and obj.parent.name=='消息':
 			if obj.value !=None: 			playWaveFile(self.SOUND_LINK)
+		if obj.role==role.BUTTON and obj.simpleParent.role==role.LISTITEM:
+			try:
+				if obj.next.firstChild.firstChild.role==role.STATICTEXT:
+					obj.name=obj.next.firstChild.firstChild.name
+			except: pass
 		if obj.role==role.BUTTON and obj.name=='sendBtn':
 			obj.name='发送(S)'
 		if 'NetErrInfoTipsBarWnd' == obj.windowClassName:
@@ -71,7 +79,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	@script(
 		description='是否自动朗读新消息',
-		category='微信pc',
+		category='PC微信增强',
 		gesture='kb:f3'
 	)
 	def script_autoMSG(self,gesture):
@@ -81,4 +89,33 @@ class AppModule(appModuleHandler.AppModule):
 			ui.message("自动读出新消息")
 		else:
 			ui.message("默认")
+
+	def event_foreground(self, obj, nextHandler):
+		if obj.windowClassName in('CefWebViewWnd', 'SubscriptionWnd'):
+			from wx import CallLater
+			CallLater(80, self.FindDocumentObject)
+		nextHandler()
+
+	@script(
+		description='寻找网页文档控件',
+		category='PC微信增强',
+		gesture='kb:f1'
+	)
+	def script_setWindow(self,gesture):
+		self.FindDocumentObject()
+
+	def FindDocumentObject(self):
+		fg=api.getForegroundObject()
+		if fg.simpleFirstChild:
+			child=fg.simpleFirstChild
+		elif child.name=='后退':
+			from tones import beep
+			beep(100,100)
+			child = child.simpleParent.simpleFirstChild.simpleNext
+		api.setNavigatorObject(child)
+		obj=api.getNavigatorObject()
+		if obj.role==role.DOCUMENT:
+			from tones import beep
+			beep(500,100)
+			eventHandler.executeEvent("gainFocus",obj)
 
