@@ -17,9 +17,6 @@ role = controlTypes.Role if version_year>=2022 else controlTypes.role.Role
 
 class AppModule(appModuleHandler.AppModule):
 	ReportOCRResultTimer=None
-	SaySessionTitleTimer = None
-	sectionTitleObject=None
-	oldSectionTitle=None
 	OCRResult=None
 	SOUND_LINK = join(dirname(__file__), "link.wav")
 	SOUND_UNREAD = join(dirname(__file__), "unread.wav")
@@ -46,66 +43,40 @@ class AppModule(appModuleHandler.AppModule):
 						for child in children:
 							if not speech.isBlank(child.name): ui.message(child.name)
 					elif obj.simpleFirstChild.role==role.BUTTON:
-						ui.message("%s 说： %s" % (obj.simpleFirstChild.name,obj.name))
-						if obj.value: ui.message(obj.value)
-					elif obj.simpleFirstChild.role==role.EDITABLETEXT:
-						ui.message("%s 说： %s" % (obj.simpleLastChild.name,obj.name))
-						if obj.value: ui.message(obj.value)
+						ui.message("%s %s" % (obj.simpleFirstChild.name, obj.name))
 		except: pass
 		nextHandler()
 
 	def event_gainFocus(self, obj, nextHandler, isFocus=False):
-		if (obj.name=="输入") and obj.windowClassName=="WeChatMainWndForPC":
-			if self.SaySessionTitleTimer:
-				self.SaySessionTitleTimer.Stop()
-			self.SaySessionTitle()
-		else:
-			if self.SaySessionTitleTimer:
-				self.SaySessionTitleTimer.Stop()
-
 		try:
-			if obj.simpleParent.name == "会话" and obj.simpleParent.role == role.LIST:
-				if role.STATICTEXT == obj.simpleLastChild.next.role:
-					if obj.simpleLastChild.name.isdigit():
-						playWaveFile(self.SOUND_UNREAD)
-						obj.name+=obj.simpleLastChild.name + "条未读"
-		except: pass
+			if obj.name==None:
+				if obj.role==role.LISTITEM:
+					children = obj.recursiveDescendants
+					for child in children:
+						if not speech.isBlank(child.name): ui.message(child.name)
+					return
+		except AttributeError: pass
+
+		if not obj.windowClassName in ("SelectContactWnd", "CMenuWnd") and obj.name in ("导航", "多选"):
+			obj.role=role.TOOLBAR
 
 		try:
 			if obj.role==role.LISTITEM and obj.parent.name=="消息":
-				if obj.value !=None:
+				if obj.value != None:
 					playWaveFile(self.SOUND_LINK)
-		except: pass
+		except AttributeError: pass
+
 		try:
 			if obj.role==role.BUTTON and obj.simpleParent.role==role.LISTITEM:
 				if obj.next.firstChild.firstChild.role==role.STATICTEXT:
-					obj.name=obj.next.firstChild.firstChild.name
-		except: pass
-
-		if obj.role==role.BUTTON and obj.name=="sendBtn":
-			obj.name="发送(S)"
+					obj.name = obj.next.firstChild.firstChild.name
+		except AttributeError: pass
 
 		try:
 			if obj.name==None:
 				if obj.role==role.CHECKBOX:
-					ui.message(obj.simpleFirstChild.simpleNext.simpleNext.name)
-				if obj.role==role.LISTITEM:
-					children = obj.recursiveDescendants
-					for child in children:
-						if child.role==role.CHECKBOX: speech.speakObject(child)
-						elif not speech.isBlank(child.name): ui.message(child.name)
-				if obj.role==role.PANE and obj.windowClassName=="WeChatMainWndForPC":
-					return
-			elif obj.treeInterceptor and obj.role==role.LIST and "discuss_list" == obj.IA2Attributes.get("class"):
-				o=obj.firstChild.firstChild
-				while o:
-					ui.message(o.firstChild.name)
-					o=o.next
-			elif obj.treeInterceptor and obj.role==role.LISTITEM and "js_comment" in obj.IA2Attributes.get("class"):
-				ui.message(obj.firstChild.name)
-			elif obj.treeInterceptor and obj.role==role.BUTTON and "sns_opr_btn sns_praise_btn" == obj.IA2Attributes.get("class"):
-				ui.message(obj.simplePrevious.name)
-		except: pass
+					obj.name=obj.simpleFirstChild.simpleNext.simpleNext.name
+		except AttributeError: pass
 		nextHandler()
 
 
@@ -124,13 +95,11 @@ class AppModule(appModuleHandler.AppModule):
 
 	def event_foreground(self, obj, nextHandler):
 		if obj.windowClassName == "ImagePreviewWnd":
-			wx.CallLater(800, self.clickButton, "提取文字")
+			wx.CallLater(800, self.clickButton, "提取文字", 0)
 			wx.CallLater(100, self.ReportOCRResult)
 		elif obj.windowClassName in("CefWebViewWnd", "SubscriptionWnd"):
 			wx.CallLater(100, self.FindDocumentObject)
 		else:
-			if self.SaySessionTitleTimer:
-				self.SaySessionTitleTimer.Stop()
 			if self.ReportOCRResultTimer:
 				self.ReportOCRResultTimer.Stop()
 				self.OCRResult=None
@@ -139,9 +108,9 @@ class AppModule(appModuleHandler.AppModule):
 	def ReportOCRResult(self):
 		fg=api.getForegroundObject()
 		try:
-			if fg.simpleLastChild.role==role.LIST:
-				if self.OCRResult != fg.simpleLastChild.simpleFirstChild.name:
-					self.OCRResult = fg.simpleLastChild.simpleFirstChild.name
+			if fg.simpleLastChild.role==role.STATICTEXT:
+				if self.OCRResult != fg.simpleLastChild.name:
+					self.OCRResult = fg.simpleLastChild.name
 					ui.message(self.OCRResult)
 					fg.simpleLastChild.name = self.OCRResult
 			else: self.OCRResult = None
@@ -168,45 +137,18 @@ class AppModule(appModuleHandler.AppModule):
 		if obj.role==role.DOCUMENT:
 			eventHandler.executeEvent("gainFocus",obj)
 
-	def SaySessionTitle(self):
-		FocusObj=api.getFocusObject()
-#		if not (FocusObj.name=="输入" and FocusObj.windowClassName=="WeChatMainWndForPC"):
-#			import tones
-#			tones.beep(100,100)
-#			return
-		if not self.sectionTitleObject:
-			self.sectionTitleObject=self.getSectionTitleObject()
-			if not self.sectionTitleObject or self.sectionTitleObject.name in ("置顶", "订阅号", "列表模式", "卡片模式"):
-#			if not self.sectionTitleObject:
-#				self.sectionTitleObject=None
-				return
-		title=self.sectionTitleObject.name
-		if (title != self.oldSectionTitle):
-			self.oldSectionTitle=title
-			speech.cancelSpeech()
-			ui.message(title)
-		self.SaySessionTitleTimer = wx.CallLater(50, self.SaySessionTitle)
-
-	def getSectionTitleObject(self):
-		obj=api.getForegroundObject()
-		try:
-			obj=obj.simpleFirstChild
-			while obj.name!="联系人":
-				obj=obj.simpleNext
-			if obj.simpleNext:
-				return obj.simpleNext
-		except:
-			pass
-
 	@script(
-		description="微信内置浏览器后退到上一页",
+		description="微信内置浏览器后退到上一页，折叠的群聊返回会话列表",
 		category="PC微信增强",
 		gesture="kb:alt+leftArrow"
 	)
 	def script_back(self,gesture):
-		if api.getForegroundObject().windowClassName == "CefWebViewWnd":
-			self.clickButton("后退")
+		windowClassName = api.getForegroundObject().windowClassName
+		if  windowClassName == "CefWebViewWnd":
+			self.clickButton("后退", 0)
 			wx.CallLater(100, self.FindDocumentObject)
+		elif windowClassName == "WeChatMainWndForPC":
+			self.clickButton("返回", 36)
 
 	@script(
 		description="关闭微信内置浏览器窗口",
@@ -215,13 +157,16 @@ class AppModule(appModuleHandler.AppModule):
 	)
 	def script_close(self,gesture):
 		if api.getForegroundObject().windowClassName in ("CefWebViewWnd", "ImagePreviewWnd"):
-			self.clickButton("关闭")
+			self.clickButton("关闭", 0)
 
-	def clickButton(self, name):
+	def clickButton(self, name, depth):
 		obj = api.getForegroundObject()
 		if not obj:
 			return
+		Depth = 0
 		for child in obj.recursiveDescendants:
+			Depth += 1
+			if depth !=0 and Depth >= depth: break
 			if child.role == role.BUTTON and child.name == name:
 				self.click(child)
 	def click(self, obj):
