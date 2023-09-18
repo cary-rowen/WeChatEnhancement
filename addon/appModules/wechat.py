@@ -19,7 +19,6 @@ class AppModule(appModuleHandler.AppModule):
 	ReportOCRResultTimer=None
 	OCRResult=None
 	SOUND_LINK = join(dirname(__file__), "link.wav")
-	SOUND_UNREAD = join(dirname(__file__), "unread.wav")
 
 	SOUND_POPUP = join(dirname(__file__), "popup.wav")
 	confspec = {
@@ -48,6 +47,7 @@ class AppModule(appModuleHandler.AppModule):
 		nextHandler()
 
 	def event_gainFocus(self, obj, nextHandler, isFocus=False):
+		# 读出被转发的消息
 		try:
 			if obj.name==None:
 				if obj.role==role.LISTITEM:
@@ -56,27 +56,19 @@ class AppModule(appModuleHandler.AppModule):
 						if not speech.isBlank(child.name): ui.message(child.name)
 					return
 		except AttributeError: pass
-
-		if not obj.windowClassName in ("SelectContactWnd", "CMenuWnd") and obj.name in ("导航", "多选"):
-			obj.role=role.TOOLBAR
-
+		# 消息列表中特殊消息音效提醒
 		try:
 			if obj.role==role.LISTITEM and obj.parent.name=="消息":
 				if obj.value != None:
 					playWaveFile(self.SOUND_LINK)
 		except AttributeError: pass
-
+		# 群组中成员昵称的报告方式
 		try:
 			if obj.role==role.BUTTON and obj.simpleParent.role==role.LISTITEM:
 				if obj.next.firstChild.firstChild.role==role.STATICTEXT:
 					obj.name = obj.next.firstChild.firstChild.name
 		except AttributeError: pass
 
-		try:
-			if obj.name==None:
-				if obj.role==role.CHECKBOX:
-					obj.name=obj.simpleFirstChild.simpleNext.simpleNext.name
-		except AttributeError: pass
 		nextHandler()
 
 
@@ -97,8 +89,6 @@ class AppModule(appModuleHandler.AppModule):
 		if obj.windowClassName == "ImagePreviewWnd":
 			wx.CallLater(800, self.clickButton, "提取文字", 0)
 			wx.CallLater(100, self.ReportOCRResult)
-		elif obj.windowClassName in("CefWebViewWnd", "SubscriptionWnd"):
-			wx.CallLater(100, self.FindDocumentObject)
 		else:
 			if self.ReportOCRResultTimer:
 				self.ReportOCRResultTimer.Stop()
@@ -116,39 +106,6 @@ class AppModule(appModuleHandler.AppModule):
 			else: self.OCRResult = None
 		except: pass
 		self.ReportOCRResultTimer = wx.CallLater(100, self.ReportOCRResult)
-
-	@script(
-		description="定位网页文档控件",
-		category="PC微信增强",
-		gesture="kb:f6"
-	)
-	def script_setWindow(self,gesture):
-		self.FindDocumentObject()
-
-
-	def FindDocumentObject(self):
-		fg=api.getForegroundObject()
-		if fg.simpleFirstChild:
-			child=fg.simpleFirstChild
-		elif child.name=="后退":
-			child = child.simpleParent.simpleFirstChild.simpleNext
-		api.setNavigatorObject(child)
-		obj=api.getNavigatorObject()
-		if obj.role==role.DOCUMENT:
-			eventHandler.executeEvent("gainFocus",obj)
-
-	@script(
-		description="微信内置浏览器后退到上一页，折叠的群聊返回会话列表",
-		category="PC微信增强",
-		gesture="kb:alt+leftArrow"
-	)
-	def script_back(self,gesture):
-		windowClassName = api.getForegroundObject().windowClassName
-		if  windowClassName == "CefWebViewWnd":
-			self.clickButton("后退", 0)
-			wx.CallLater(100, self.FindDocumentObject)
-		elif windowClassName == "WeChatMainWndForPC":
-			self.clickButton("返回", 36)
 
 	@script(
 		description="关闭微信内置浏览器窗口",

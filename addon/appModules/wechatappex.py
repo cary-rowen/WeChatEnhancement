@@ -26,34 +26,3 @@ class AppModule(appModuleHandler.AppModule):
 		except: pass
 		nextHandler()
 
-
-	@script(
-		description="后退到上一页",
-		category="PC微信增强",
-		gesture="kb:alt+leftArrow"
-	)
-	def script_back(self,gesture):
-		self.clickButton("后退")
-
-
-	@script(
-		description="关闭窗口",
-		category="PC微信增强",
-		gesture="kb:control+w"
-	)
-	def script_close(self,gesture):
-		self.clickButton("关闭")
-
-	def clickButton(self, name):
-		obj = api.getForegroundObject()
-		if not obj:
-			return
-		for child in obj.recursiveDescendants:
-			if child.role == role.BUTTON and child.name == name:
-				self.click(child)
-	def click(self, obj):
-		l, t, w, h = obj.location
-		x, y = int(l + w / 2), int(t + h / 2)
-		winUser.setCursorPos(x, y)
-		mouseHandler.executeMouseMoveEvent(x, y)
-		mouseHandler.doPrimaryClick()
