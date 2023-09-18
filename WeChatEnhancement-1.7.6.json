@@ -1,0 +1,29 @@
+{
+	"addonId": "WeChatEnhancement",
+	"displayName": "PC WeChat Enhancement",
+	"URL": "",
+	"description": "Enhance the experience of using PC WeChat for NVDA users.",
+	"sha256": "b779446ee71664330a3fc5317e63f6323f70c03f8c505a36cd3c6b4e3c581cc5",
+	"homepage": "https://www.nvdacn.com/",
+	"addonVersionName": "1.7.6",
+	"addonVersionNumber": {
+		"major": 1,
+		"minor": 7,
+		"patch": 6
+	},
+	"minNVDAVersion": {
+		"major": 0,
+		"minor": 0,
+		"patch": 0
+	},
+	"lastTestedVersion": {
+		"major": 0,
+		"minor": 0,
+		"patch": 0
+	},
+	"channel": "stable",
+	"publisher": "",
+	"sourceURL": "https://github.com/cary-rowen/WeChatEnhancement",
+	"license": "GPL v2",
+	"licenseURL": "https://www.gnu.org/licenses/gpl-2.0.html"
+}

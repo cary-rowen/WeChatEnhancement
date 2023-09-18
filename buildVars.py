@@ -20,12 +20,12 @@ addon_info = {
 	# Add-on summary, usually the user visible name of the addon.
 	# Translators: Summary for this add-on
 	# to be shown on installation and add-on information found in Add-ons Manager.
-	"addon_summary": _("PC微信增强"),
+	"addon_summary": _("PC WeChat Enhancement"),
 	# Add-on description
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
-	"addon_description": _("""增强 PC微信的使用体验，修复因PC微信无障碍缺陷导致的多处列表项朗读问题，支持朗读公众号留言，修正错误的按钮标签，添加快速键等。"""),
+	"addon_description": _("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	"addon_version": "1.7.5",
+	"addon_version": "1.7.6",
 	# Author(s)
 	"addon_author": "沉浮, Cary-Rowen <manchen_0528@outlook.com>",
 	# URL for the add-on documentation support
@@ -68,7 +68,7 @@ excludedFiles = []
 # Base language for the NVDA add-on
 # If your add-on is written in a language other than english, modify this variable.
 # For example, set baseLanguage to "es" if your add-on is primarily written in spanish.
-baseLanguage = "zh_CN"
+baseLanguage = "en"
 
 # Markdown extensions for add-on documentation
 # Most add-ons do not require additional Markdown extensions.

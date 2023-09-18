@@ -1,15 +1,5 @@
-# PC微信无障碍增强
+# PC WeChat Enhancement
 
-* 作者： 沉浮 & Eureka
-* NVDA 兼容版本： NVDA2021.2 及以上
-* 兼容微信版本： 微信 3.9.7+
+This add-on is designed to enhance the experience of NVDA users when using Tencent WeChat, an instant chat software.
 
-**注： 使微信支持 NVDA 对象文本查看的思路来源于“NV宝盒”。**
-
-## 增强特性
-1. 公众号文章留言的朗读支持（需按 NVDA+大键盘8 “打开焦点自动跳转到可聚焦元素”）。
-2. F3键： 开启/关闭自动朗读新消息（默认关闭）。
-3. 消息列表内浏览非普通文本消息时增加音效提示。
-4. 支持使用 NVDA 的对象文本查看浏览微信的控件信息。
-5. 针对群成员昵称朗读的改进： 开启了“显示群成员昵称”则只读群成员昵称，关闭该选项则只读微信昵称。
-6. 当在微信中打开包含文字的图片时会自动提取文字并读出结果。
+For specific enhancement features, please see the [Chinese version documentation](../zh_CN/readme.html).
