@@ -52,22 +52,22 @@ class AppModule(appModuleHandler.AppModule):
 		nextHandler()
 
 	def event_gainFocus(self, obj, nextHandler, isFocus=False):
-		# 读出被转发的消息
-		if obj.windowClassName == "ChatRecordWnd":
-			if obj.role == role.LISTITEM:
-				date = ""
-				msg = []
-				children = obj.recursiveDescendants
-				for child in children:
-					if not speech.isBlank(child.name):
-						from datetime import datetime
-						try:
-							datetime.strptime(child.name, "%m-%d %H:%M:%S")
-							date = child.name
-						except ValueError:
-							msg.append(child.name)
-				msg.append(date)
-				obj.name = '，'.join(msg)
+		if obj.role == role.LISTITEM and obj.windowClassName == 'ChatRecordWnd'\
+		or obj.role == role.LISTITEM and obj.name is None:
+			date = ""
+			msg = []
+			children = obj.recursiveDescendants
+			for child in children:
+				if not speech.isBlank(child.name):
+					from datetime import datetime
+					try:
+						datetime.strptime(child.name, "%m-%d %H:%M:%S")
+						date = child.name
+					except ValueError:
+						msg.append(child.name)
+			msg.append(date)
+			obj.name = '，'.join(msg)
+
 		# 消息列表中特殊消息音效提醒
 		try:
 			if obj.role == role.LISTITEM and obj.parent.name == "消息":
