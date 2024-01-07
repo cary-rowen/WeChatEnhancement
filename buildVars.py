@@ -25,7 +25,7 @@ addon_info = {
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
 	"addon_description": _("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	"addon_version": "1.7.7",
+	"addon_version": "1.8.0",
 	# Author(s)
 	"addon_author": "沉浮, Cary-Rowen <manchen_0528@outlook.com>",
 	# URL for the add-on documentation support
