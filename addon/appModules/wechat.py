@@ -5,17 +5,30 @@ import appModuleHandler
 import config
 import controlTypes
 import eventHandler
+import IAccessibleHandler
 import mouseHandler
 import speech
 import ui
 import winUser
 import wx
-from NVDAObjects import NVDAObjectTextInfo
+from NVDAObjects import NVDAObject, NVDAObjectTextInfo, IAccessible
 from nvwave import playWaveFile
 from scriptHandler import script
 from versionInfo import version_year
 
 role = controlTypes.Role if version_year >= 2022 else controlTypes.role.Role
+
+
+class RedirectWeChat(IAccessible.IAccessible):
+
+	def objectFromPointRedirect(self, x: int, y: int):
+		redirectObj: IAccessible.IAccessible = self.firstChild
+		redirect = redirectObj.IAccessibleObject.accHitTest(x, y)
+		if not redirect:
+			return None
+		redirect = IAccessibleHandler.normalizeIAccessible(redirect)
+		obj = IAccessible.IAccessible(IAccessibleObject=redirect, IAccessibleChildID=winUser.CHILDID_SELF)
+		return obj
 
 
 class AppModule(appModuleHandler.AppModule):
@@ -34,6 +47,13 @@ class AppModule(appModuleHandler.AppModule):
 		if role.EDITABLETEXT != obj.role:
 			obj.displayText = obj.name
 			obj.TextInfo = NVDAObjectTextInfo
+
+	def chooseNVDAObjectOverlayClasses(self, obj: NVDAObject, clsList: list[NVDAObject]):
+		if (
+			obj.role == controlTypes.Role.PANE
+			and obj.states == set()
+		):
+			clsList.insert(0, RedirectWeChat)
 
 	def event_nameChange(self, obj, nextHandler):
 		try:
