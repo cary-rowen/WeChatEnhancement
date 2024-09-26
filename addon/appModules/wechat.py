@@ -105,6 +105,15 @@ class AppModule(appModuleHandler.AppModule):
 
 		nextHandler()
 
+	def event_mouseMove(self, obj: NVDAObject, nextHandler):
+		if obj.role == role.BUTTON and obj.name == "" and obj.previous.role == role.PANE:
+			for child in obj.previous.children:
+				if child.role == role.STATICTEXT and child.name != "":
+					obj.name = child.name
+					break
+		nextHandler()
+
+
 	@script(
 		description="是否自动朗读新消息",
 		category="PC微信增强",
