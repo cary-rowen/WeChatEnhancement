@@ -44,10 +44,9 @@ class AppModule(appModuleHandler.AppModule):
 	isAutoMSG = config.conf["WeChatEnhancement"]["isAutoMSG"]
 
 	def event_NVDAObject_init(self, obj):
-		obj.TextInfo = NVDAObjectTextInfo
-
 		if role.EDITABLETEXT != obj.role:
 			obj.displayText = obj.name
+			obj.TextInfo = NVDAObjectTextInfo
 
 	def chooseNVDAObjectOverlayClasses(self, obj: NVDAObject, clsList: list[NVDAObject]):
 		if (
