@@ -105,7 +105,7 @@ class AppModule(appModuleHandler.AppModule):
 
 		nextHandler()
 
-	def event_mouseMove(self, obj: NVDAObject, nextHandler):
+	def event_mouseMove(self, obj: NVDAObject, nextHandler, x: int, y: int):
 		nameIsEmpty = False
 		if obj.role == role.BUTTON and obj.name == "" and obj.previous.role == role.PANE:
 			nameIsEmpty = True
