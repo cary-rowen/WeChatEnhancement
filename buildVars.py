@@ -25,7 +25,7 @@ addon_info = {
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
 	"addon_description": _("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	"addon_version": "1.8.5",
+	"addon_version": "1.8.7",
 	# Author(s)
 	"addon_author": "沉浮, Cary-Rowen <manchen_0528@outlook.com>, hwf1324 <1398969445@qq.com>",
 	# URL for the add-on documentation support
@@ -37,7 +37,7 @@ addon_info = {
 	# Minimum NVDA version supported (e.g. "2018.3.0", minor version is optional)
 	"addon_minimumNVDAVersion": "2022.1.0",
 	# Last NVDA version supported/tested (e.g. "2018.4.0", ideally more recent than minimum version)
-	"addon_lastTestedNVDAVersion": "2024.1.0",
+	"addon_lastTestedNVDAVersion": "2025.1.0",
 	# Add-on update channel (default is None, denoting stable releases,
 	# and for development releases, use "dev".)
 	# Do not change unless you know what you are doing!
@@ -63,11 +63,14 @@ i18nSources = pythonSources + ["buildVars.py"]
 
 # Files that will be ignored when building the nvda-addon file
 # Paths are relative to the addon directory, not to the root directory of your addon sources.
+# You can either list every file (using ""/") as a path separator,
+# or use glob expressions.
 excludedFiles = []
 
 # Base language for the NVDA add-on
 # If your add-on is written in a language other than english, modify this variable.
 # For example, set baseLanguage to "es" if your add-on is primarily written in spanish.
+# You must also edit .gitignore file to specify base language files to be ignored.
 baseLanguage = "en"
 
 # Markdown extensions for add-on documentation
@@ -76,3 +79,22 @@ baseLanguage = "en"
 # Extensions string must be of the form "markdown.extensions.extensionName"
 # e.g. "markdown.extensions.tables" to add tables.
 markdownExtensions = []
+
+# Custom braille translation tables
+# If your add-on includes custom braille tables (most will not), fill out this dictionary.
+# Each key is a dictionary named according to braille table file name,
+# with keys inside recording the following attributes:
+# displayName (name of the table shown to users and translatable),
+# contracted (contracted (True) or uncontracted (False) braille code),
+# output (shown in output table list),
+# input (shown in input table list).
+brailleTables = {}
+
+# Custom speech symbol dictionaries
+# Symbol dictionary files reside in the locale folder, e.g. `locale\en`, and are named `symbols-<name>.dic`.
+# If your add-on includes custom speech symbol dictionaries (most will not), fill out this dictionary.
+# Each key is the name of the dictionary,
+# with keys inside recording the following attributes:
+# displayName (name of the speech dictionary shown to users and translatable),
+# mandatory (True when always enabled, False when not.
+symbolDictionaries = {}
