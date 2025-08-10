@@ -25,7 +25,7 @@ addon_info = {
 	# Translators: Long description to be shown for this add-on on add-on information from add-ons manager
 	"addon_description": _("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	"addon_version": "1.8.7",
+	"addon_version": "1.8.8",
 	# Author(s)
 	"addon_author": "沉浮, Cary-Rowen <manchen_0528@outlook.com>, hwf1324 <1398969445@qq.com>",
 	# URL for the add-on documentation support
@@ -56,7 +56,7 @@ addon_info = {
 # pythonSources = ["addon/globalPlugins/*.py"]
 # For more information on SCons Glob expressions please take a look at:
 # https://scons.org/doc/production/HTML/scons-user/apd.html
-pythonSources = []
+pythonSources = ["addon/appModules/weixin.py"]
 
 # Files that contain strings for translation. Usually your python sources
 i18nSources = pythonSources + ["buildVars.py"]
