@@ -105,12 +105,23 @@ class AppModule(appModuleHandler.AppModule):
 
 		nextHandler()
 
-	def event_mouseMove(self, obj: NVDAObject, nextHandler):
+	def event_mouseMove(self, obj: NVDAObject, nextHandler, x: int, y: int):
+		nameIsEmpty = False
 		if obj.role == role.BUTTON and obj.name == "" and obj.previous.role == role.PANE:
+			nameIsEmpty = True
 			for child in obj.previous.children:
 				if child.role == role.STATICTEXT and child.name != "":
 					obj.name = child.name
+					nameIsEmpty = False
 					break
+
+		if obj.role == role.PANE and obj.name is None or nameIsEmpty:
+			parentObj: NVDAObject = obj.parent
+			while parentObj and parentObj.appModule == self and parentObj.role != role.LISTITEM:
+				parentObj = parentObj.parent
+			if obj.appModule == self and parentObj.role == role.LISTITEM:
+				obj.name = parentObj.name
+
 		nextHandler()
 
 
