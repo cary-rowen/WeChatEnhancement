@@ -320,7 +320,7 @@ class AppModule(appModuleHandler.AppModule):
 			"text": text,
 		}
 
-	def _collectVisibleMessageRecordsWithUIA(
+	def _collectVisibleMessageRecords(
 		self,
 		messageList: Any,
 	) -> list[dict[str, Any]]:
@@ -356,13 +356,6 @@ class AppModule(appModuleHandler.AppModule):
 			if record is not None:
 				records.append(record)
 		return records
-
-	def _collectVisibleMessageRecords(
-		self,
-		messageList: Any,
-	) -> list[dict[str, Any]]:
-		"""Collect visible message records from the chat message list."""
-		return self._collectVisibleMessageRecordsWithUIA(messageList)
 
 	def _createChatState(self) -> dict[str, Any]:
 		"""Create message review state for one chat."""
@@ -596,17 +589,13 @@ class AppModule(appModuleHandler.AppModule):
 			return None
 		return rect
 
-	def _getMouseScrollPoints(self, messageList: Any) -> list[tuple[int, int]]:
-		"""Return candidate points inside the message list for wheel scrolling."""
+	def _getMouseScrollPoint(self, messageList: Any) -> tuple[int, int] | None:
+		"""Return the center point inside the message list for wheel scrolling."""
 		rect = self._getObjectRect(messageList)
 		if rect is None:
-			return []
+			return None
 		left, top, width, height = rect
-		y = int(top + height / 2)
-		points = [
-			(int(left + width / 2), y),
-		]
-		return points
+		return int(left + width / 2), int(top + height / 2)
 
 	def _isKeyDown(self, vkCode: int) -> bool:
 		"""Return whether a virtual key is currently down."""
@@ -637,8 +626,8 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _scrollMessageList(self, messageList: Any, scrollSteps: int) -> bool:
 		"""Scroll the message list by moving the mouse to the list temporarily."""
-		points = self._getMouseScrollPoints(messageList)
-		if not points:
+		point = self._getMouseScrollPoint(messageList)
+		if point is None:
 			return False
 
 		oldX, oldY = winUser.getCursorPos()
@@ -646,9 +635,8 @@ class AppModule(appModuleHandler.AppModule):
 		try:
 			if pressedAltKeys:
 				self._setSyntheticAltKeysUp(pressedAltKeys, True)
-			for point in points:
-				winUser.setCursorPos(*point)
-				mouseHandler.scrollMouseWheel(scrollSteps, isVertical=True)
+			winUser.setCursorPos(*point)
+			mouseHandler.scrollMouseWheel(scrollSteps, isVertical=True)
 		except Exception:
 			log.debugWarning("Unable to scroll the WeChat message list.", exc_info=True)
 			return False
