@@ -295,8 +295,6 @@ class AppModule(appModuleHandler.AppModule):
 		return {
 			"messages": [],
 			"currentIndex": -1,
-			"visibleStart": None,
-			"visibleEnd": None,
 		}
 
 	def _findSubList(self, source: list[str], target: list[str]) -> int | None:
@@ -376,22 +374,6 @@ class AppModule(appModuleHandler.AppModule):
 		self._trimReviewState(state)
 		return updateKind
 
-	def _updateVisibleWindow(
-		self,
-		state: dict[str, Any],
-		records: list[dict[str, Any]],
-	):
-		"""Store the currently visible message window in queue coordinates."""
-		visibleMessages = [record["text"] for record in records]
-		visibleStart = self._findSubList(state["messages"], visibleMessages)
-		if visibleStart is None:
-			state["visibleStart"] = None
-			state["visibleEnd"] = None
-			return
-
-		state["visibleStart"] = visibleStart
-		state["visibleEnd"] = visibleStart + len(visibleMessages) - 1
-
 	def _trimReviewState(self, state: dict[str, Any]):
 		"""Keep the temporary review queue within the configured maximum size."""
 		overflow = len(state["messages"]) - self.MAX_MESSAGE_QUEUE_SIZE
@@ -399,10 +381,6 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		del state["messages"][:overflow]
 		state["currentIndex"] = max(0, state["currentIndex"] - overflow)
-		if state["visibleStart"] is not None:
-			state["visibleStart"] = max(0, state["visibleStart"] - overflow)
-		if state["visibleEnd"] is not None:
-			state["visibleEnd"] = max(0, state["visibleEnd"] - overflow)
 
 	def _setNotificationBaseline(
 		self,
@@ -433,7 +411,6 @@ class AppModule(appModuleHandler.AppModule):
 		state = self.reviewState
 		visibleMessages = [record["text"] for record in records]
 		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
-		self._updateVisibleWindow(state, records)
 		self.activeMessageList = messageList
 		if setNotificationBaseline:
 			self._setNotificationBaseline(records)
@@ -804,6 +781,25 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		self._readReviewDirection(state, direction)
 
+	def _readIndexedReviewMessage(self, gesture: Any, index: int):
+		"""Read a review message at an index from the active queue."""
+		if not self._isMessageInputFocus():
+			self._sendReviewGestureThrough(gesture)
+			return
+		self._suppressNotificationsForUserAction()
+		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
+			self.scrollLoadTimer.Stop()
+			self.scrollLoadTimer = None
+		if self.isBoundaryScrollPending:
+			self.isBoundaryScrollPending = False
+		state = self._getActiveReviewState()
+		if state is None:
+			return
+
+		if index < 0:
+			index = len(state["messages"]) + index
+		self._speakMessageAtIndex(state, index)
+
 	@script(
 		# Translators: Description for the command that reads the previous WeChat message.
 		description=_("Reads the previous message in the current WeChat chat"),
@@ -825,6 +821,16 @@ class AppModule(appModuleHandler.AppModule):
 		self._handleRelativeReviewGesture(gesture, 1)
 
 	@script(
+		# Translators: Description for the command that reads the first WeChat message.
+		description=_("Reads the first message in the current WeChat chat"),
+		category=SCRIPT_CATEGORY,
+		gesture="kb:alt+home",
+	)
+	def script_readFirstMessage(self, gesture: Any):
+		"""Read the oldest message from the active review queue."""
+		self._readIndexedReviewMessage(gesture, 0)
+
+	@script(
 		# Translators: Description for the command that reads the last WeChat message.
 		description=_("Reads the last message in the current WeChat chat"),
 		category=SCRIPT_CATEGORY,
@@ -832,21 +838,7 @@ class AppModule(appModuleHandler.AppModule):
 	)
 	def script_readLastMessage(self, gesture: Any):
 		"""Read the newest message from the active review queue."""
-		if not self._isMessageInputFocus():
-			self._sendReviewGestureThrough(gesture)
-			return
-		self._suppressNotificationsForUserAction()
-		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
-			self.scrollLoadTimer.Stop()
-			self.scrollLoadTimer = None
-		if self.isBoundaryScrollPending:
-			self.isBoundaryScrollPending = False
-		state = self._getActiveReviewState()
-		if state is None:
-			return
-
-		state["currentIndex"] = len(state["messages"]) - 1
-		self._speakReviewMessage(state["messages"][state["currentIndex"]])
+		self._readIndexedReviewMessage(gesture, -1)
 
 	@script(
 		# Translators: Description for the command that changes new message notification mode.
