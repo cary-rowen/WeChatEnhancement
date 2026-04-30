@@ -51,7 +51,6 @@ class AppModule(appModuleHandler.AppModule):
 	MAX_DESCENDANTS_TO_SEARCH = 300
 	SCROLL_LOAD_DELAY = 25
 	MAX_BOUNDARY_SCROLL_ATTEMPTS = 4
-	PENDING_REVIEW_DRAIN_DELAY = 0
 	KEYEVENTF_EXTENDEDKEY = 0x0001
 	KEYEVENTF_KEYUP = 0x0002
 	# Translators: The name of the category in NVDA's input gestures dialog.
@@ -79,8 +78,6 @@ class AppModule(appModuleHandler.AppModule):
 		self.activeMessageList = None
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
-		self.pendingReviewDirection: int | None = None
-		self.pendingReviewDrainTimer = None
 
 		eventHandler.requestEvents(
 			"gainFocus",
@@ -90,7 +87,6 @@ class AppModule(appModuleHandler.AppModule):
 
 	def terminate(self):
 		"""Stop pending timers before unloading the app module."""
-		self._clearPendingReviewGesture()
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.scrollLoadTimer = None
@@ -729,7 +725,6 @@ class AppModule(appModuleHandler.AppModule):
 		scheduledRetry = False
 		try:
 			if not self._isMessageInputFocus():
-				self._clearPendingReviewGesture()
 				return
 			state = self.refreshMessageQueue(setNotificationBaseline=True)
 			if not state or not state["messages"]:
@@ -752,8 +747,6 @@ class AppModule(appModuleHandler.AppModule):
 		finally:
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
-				if self.pendingReviewDirection is not None:
-					self._schedulePendingReviewDrain()
 
 	def _getScrollWheelUnitsForAttempt(self, attempt: int) -> int:
 		"""Return the number of wheel detents to send for a boundary retry."""
@@ -778,7 +771,6 @@ class AppModule(appModuleHandler.AppModule):
 		messageList = self._findCurrentMessageList()
 		if messageList is None:
 			self.isBoundaryScrollPending = False
-			self._clearPendingReviewGesture()
 			return
 
 		oldMessages = list(state["messages"])
@@ -792,7 +784,6 @@ class AppModule(appModuleHandler.AppModule):
 				self._scrollBoundaryAndRead(state, direction, attempt=attempt + 1)
 				return
 			self.isBoundaryScrollPending = False
-			self._clearPendingReviewGesture()
 			return
 
 		self.scrollLoadTimer = wx.CallLater(
@@ -910,7 +901,6 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _sendReviewGestureThrough(self, gesture: Any):
 		"""Let WeChat or NVDA handle a review gesture outside the message input."""
-		self._clearPendingReviewGesture()
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 			self.scrollLoadTimer = None
@@ -921,28 +911,6 @@ class AppModule(appModuleHandler.AppModule):
 		except Exception:
 			log.debugWarning("Unable to send WeChat review gesture through.", exc_info=True)
 
-	def _clearPendingReviewGesture(self):
-		"""Clear the queued review gesture and stop its drain timer."""
-		self.pendingReviewDirection = None
-		if self.pendingReviewDrainTimer and self.pendingReviewDrainTimer.IsRunning():
-			self.pendingReviewDrainTimer.Stop()
-		self.pendingReviewDrainTimer = None
-
-	def _queuePendingReviewGesture(self, direction: int):
-		"""Queue a review movement while a boundary scroll is loading."""
-		self.pendingReviewDirection = direction
-
-	def _schedulePendingReviewDrain(self):
-		"""Schedule the queued review gesture to run after a boundary load speaks."""
-		if self.pendingReviewDirection is None:
-			return
-		if self.pendingReviewDrainTimer and self.pendingReviewDrainTimer.IsRunning():
-			return
-		self.pendingReviewDrainTimer = wx.CallLater(
-			self.PENDING_REVIEW_DRAIN_DELAY,
-			self._drainPendingReviewGesture,
-		)
-
 	def _readReviewDirection(self, state: dict[str, Any], direction: int) -> bool:
 		"""Read one relative review movement, scrolling only at a queue boundary."""
 		if direction > 0 and state["currentIndex"] >= len(state["messages"]) - 1:
@@ -951,31 +919,6 @@ class AppModule(appModuleHandler.AppModule):
 			self._scrollBoundaryAndRead(state, direction)
 			return False
 		return self._speakRelativeMessage(state, direction)
-
-	def _drainPendingReviewGesture(self):
-		"""Read the queued review gesture after the boundary message is available."""
-		self.pendingReviewDrainTimer = None
-		if self.pendingReviewDirection is None:
-			return
-		if self.isBoundaryScrollPending:
-			return
-		if not self._isMessageInputFocus():
-			self._clearPendingReviewGesture()
-			return
-
-		state = self._getActiveChatState(refresh=False)
-		if state is None:
-			self._clearPendingReviewGesture()
-			return
-
-		direction = self.pendingReviewDirection
-		self.pendingReviewDirection = None
-		didSpeak = self._readReviewDirection(state, direction)
-		if self.isBoundaryScrollPending:
-			return
-		if not didSpeak:
-			self._clearPendingReviewGesture()
-			return
 
 	def _getCachedActiveChatState(self) -> dict[str, Any] | None:
 		"""Return the active chat state without refreshing visible messages."""
@@ -1014,9 +957,7 @@ class AppModule(appModuleHandler.AppModule):
 			self._sendReviewGestureThrough(gesture)
 			return
 		if self.isBoundaryScrollPending:
-			self._queuePendingReviewGesture(direction)
 			return
-		self._clearPendingReviewGesture()
 		state = self._getActiveChatState()
 		if state is None:
 			return
@@ -1053,7 +994,6 @@ class AppModule(appModuleHandler.AppModule):
 		if not self._isMessageInputFocus():
 			self._sendReviewGestureThrough(gesture)
 			return
-		self._clearPendingReviewGesture()
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 			self.scrollLoadTimer = None
