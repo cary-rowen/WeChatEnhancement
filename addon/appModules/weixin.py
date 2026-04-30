@@ -15,11 +15,9 @@ import api
 import appModuleHandler
 import config
 import controlTypes
-import core
 import eventHandler
 import mouseHandler
 import speech
-import synthDriverHandler
 import ui
 import UIAHandler
 import winUser
@@ -83,13 +81,6 @@ class AppModule(appModuleHandler.AppModule):
 		self.isBoundaryScrollPending = False
 		self.pendingReviewDirection: int | None = None
 		self.pendingReviewDrainTimer = None
-		self.isPendingReviewDrainDeferred = False
-		self.isReviewSpeechActive = False
-		self.lastQueuedSpeechIndex = 0
-		self.lastReachedSpeechIndex = 0
-		synthDriverHandler.pre_synthSpeak.register(self._onPreSynthSpeak)
-		synthDriverHandler.synthIndexReached.register(self._onSynthIndexReached)
-		synthDriverHandler.synthDoneSpeaking.register(self._onSynthDoneSpeaking)
 
 		eventHandler.requestEvents(
 			"gainFocus",
@@ -100,10 +91,6 @@ class AppModule(appModuleHandler.AppModule):
 	def terminate(self):
 		"""Stop pending timers before unloading the app module."""
 		self._clearPendingReviewGesture()
-		self._clearDeferredReviewWork()
-		synthDriverHandler.pre_synthSpeak.unregister(self._onPreSynthSpeak)
-		synthDriverHandler.synthIndexReached.unregister(self._onSynthIndexReached)
-		synthDriverHandler.synthDoneSpeaking.unregister(self._onSynthDoneSpeaking)
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.scrollLoadTimer = None
@@ -681,60 +668,9 @@ class AppModule(appModuleHandler.AppModule):
 				pass
 		return True
 
-	def _clearDeferredReviewWork(self):
-		"""Clear review work that is waiting for current speech to finish."""
-		self.isPendingReviewDrainDeferred = False
-
-	def _isSpeechActive(self) -> bool:
-		"""Return whether NVDA appears to still be speaking."""
-		return self.isReviewSpeechActive or self.lastQueuedSpeechIndex != self.lastReachedSpeechIndex
-
-	def _onPreSynthSpeak(self, speechSequence: speech.SpeechSequence):
-		"""Track the latest speech index sent to the synthesizer."""
-		try:
-			index = speechSequence[-1].index
-		except Exception:
-			return
-		self.lastQueuedSpeechIndex = index
-
-	def _onSynthIndexReached(self, synth: synthDriverHandler.SynthDriver, index: int):
-		"""Track the latest speech index reached by the synthesizer."""
-		self.lastReachedSpeechIndex = index
-		if self.isPendingReviewDrainDeferred:
-			core.callLater(0, self._runDeferredReviewWork)
-
-	def _onSynthDoneSpeaking(self):
-		"""Run deferred review work after NVDA finishes speaking."""
-		self.isReviewSpeechActive = False
-		if not self.isPendingReviewDrainDeferred:
-			return
-		core.callLater(0, self._runDeferredReviewWork)
-
 	def _speakReviewMessage(self, text: str):
-		"""Speak a review message and mark speech-sensitive work as blocked."""
-		self.isReviewSpeechActive = True
+		"""Speak a review message."""
 		ui.message(text)
-
-	def _deferPendingReviewDrainUntilSpeechDone(self):
-		"""Read queued review gestures after the boundary message has finished speaking."""
-		if self.pendingReviewDirection is None:
-			return
-		self.isPendingReviewDrainDeferred = True
-
-	def _runDeferredReviewWork(self):
-		"""Run a pending review gesture once speech has completed."""
-		if self._isSpeechActive():
-			return
-		if self.isBoundaryScrollPending:
-			return
-		if not self._isMessageInputFocus():
-			self._clearDeferredReviewWork()
-			self._clearPendingReviewGesture()
-			return
-		if self.isPendingReviewDrainDeferred and self.pendingReviewDirection is not None:
-			self.isPendingReviewDrainDeferred = False
-			self._schedulePendingReviewDrain()
-			return
 
 	def _speakRelativeMessage(self, state: dict[str, Any], direction: int) -> bool:
 		"""Speak a message relative to the current review cursor."""
@@ -791,7 +727,6 @@ class AppModule(appModuleHandler.AppModule):
 	):
 		"""Refresh after a boundary scroll and read the requested relative message."""
 		scheduledRetry = False
-		didSpeak = False
 		try:
 			if not self._isMessageInputFocus():
 				self._clearPendingReviewGesture()
@@ -803,7 +738,6 @@ class AppModule(appModuleHandler.AppModule):
 			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, direction)
 			if targetIndex is not None:
 				if self._speakMessageAtIndex(state, targetIndex):
-					didSpeak = True
 					return
 			if nextAttempt <= self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
 				scheduledRetry = True
@@ -818,9 +752,7 @@ class AppModule(appModuleHandler.AppModule):
 		finally:
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
-				if didSpeak and self.pendingReviewDirection is not None:
-					self._deferPendingReviewDrainUntilSpeechDone()
-				elif self.pendingReviewDirection is not None:
+				if self.pendingReviewDirection is not None:
 					self._schedulePendingReviewDrain()
 
 	def _getScrollWheelUnitsForAttempt(self, attempt: int) -> int:
@@ -979,7 +911,6 @@ class AppModule(appModuleHandler.AppModule):
 	def _sendReviewGestureThrough(self, gesture: Any):
 		"""Let WeChat or NVDA handle a review gesture outside the message input."""
 		self._clearPendingReviewGesture()
-		self._clearDeferredReviewWork()
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 			self.scrollLoadTimer = None
@@ -1086,7 +1017,6 @@ class AppModule(appModuleHandler.AppModule):
 			self._queuePendingReviewGesture(direction)
 			return
 		self._clearPendingReviewGesture()
-		self._clearDeferredReviewWork()
 		state = self._getActiveChatState()
 		if state is None:
 			return
@@ -1129,7 +1059,6 @@ class AppModule(appModuleHandler.AppModule):
 			self.scrollLoadTimer = None
 		if self.isBoundaryScrollPending:
 			self.isBoundaryScrollPending = False
-		self._clearDeferredReviewWork()
 		state = self._getActiveChatState()
 		if state is None:
 			return
