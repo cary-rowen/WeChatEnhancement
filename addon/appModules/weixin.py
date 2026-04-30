@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 from os.path import dirname, join
 from typing import Any
 
@@ -38,17 +37,12 @@ class AppModule(appModuleHandler.AppModule):
 	MESSAGE_INPUT_UIA_ID = "chat_input_field"
 	MESSAGE_ITEM_UIA_ID = "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"
 	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
-	CHAT_MESSAGE_PAGE_UIA_ID = "chat_message_page"
-	CHAT_SINGLE_WINDOW_UIA_ID_PREFIX = "ChatSingleWindow"
-	CHAT_TITLE_LEFT_CONTENT_UIA_ID = (
-		"content_view.top_content_view.title_h_view.left_v_view.left_content_v_view"
-	)
 	MAIN_TABBAR_UIA_ID = "main_tabbar"
 	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowIcon"
 	CONFIG_SECTION = "weixin"
 	CONFIG_KEY_NOTIFICATION_MODE = "notificationMode"
 	MAX_MESSAGE_QUEUE_SIZE = 200
-	MAX_DESCENDANTS_TO_SEARCH = 300
+	MAX_SIMPLE_NEXT_TO_SEARCH = 80
 	SCROLL_LOAD_DELAY = 25
 	MAX_BOUNDARY_SCROLL_ATTEMPTS = 4
 	KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -73,9 +67,9 @@ class AppModule(appModuleHandler.AppModule):
 		self.notificationMode = config.conf[self.CONFIG_SECTION][self.CONFIG_KEY_NOTIFICATION_MODE]
 		self.isUserActive = False
 		self.activityTimer = None
-		self.chatStates: dict[Any, dict[str, Any]] = {}
-		self.activeChatKey = None
+		self.reviewState = self._createReviewState()
 		self.activeMessageList = None
+		self.reviewQueueResetOnLastRefresh = False
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
 
@@ -94,20 +88,6 @@ class AppModule(appModuleHandler.AppModule):
 			self.activityTimer.Stop()
 		self.activityTimer = None
 		super().terminate()
-
-	def _getObjectRuntimeID(self, obj: Any) -> tuple[Any, ...] | None:
-		"""Return an object's UIA runtime ID when available."""
-		try:
-			uiaElement = obj.UIAElement
-		except Exception:
-			return None
-
-		for methodName in ("getRuntimeId", "GetRuntimeId"):
-			try:
-				return tuple(getattr(uiaElement, methodName)())
-			except Exception:
-				continue
-		return None
 
 	def _getObjectText(self, obj: Any) -> str | None:
 		"""Return useful accessible text for an object."""
@@ -134,13 +114,6 @@ class AppModule(appModuleHandler.AppModule):
 		except Exception:
 			return ""
 		return className or ""
-
-	def _getObjectChildren(self, obj: Any) -> list[Any]:
-		"""Return an object's children without letting traversal fail."""
-		try:
-			return list(obj.children)
-		except Exception:
-			return []
 
 	def _getObjectLocation(self, obj: Any) -> tuple[int, int, int, int] | None:
 		"""Return an object's screen location."""
@@ -192,12 +165,12 @@ class AppModule(appModuleHandler.AppModule):
 		if text is None:
 			return None
 
-		runtimeID = self._getObjectRuntimeID(obj)
-		if runtimeID is None:
-			return None
+		automationID = self._getObjectAutomationID(obj)
+		className = self._getObjectUIAClassName(obj)
+		itemID = automationID or className
 
 		return {
-			"info": ("runtimeID", runtimeID),
+			"info": ("uia", itemID, self._getObjectLocation(obj), text),
 			"text": text,
 		}
 
@@ -205,82 +178,35 @@ class AppModule(appModuleHandler.AppModule):
 		"""Return whether an object is the WeChat chat message list."""
 		return self._getObjectAutomationID(obj) == self.MESSAGE_LIST_UIA_ID
 
-	def _getContainingMessageList(self, obj: Any) -> Any | None:
-		"""Return the chat message list containing an object."""
-		while obj:
-			if self._isMessageList(obj):
-				return obj
+	def _findMessageListAfterInput(self, inputObj: Any) -> Any | None:
+		"""Find the chat message list by walking forward from the input field."""
+		obj = inputObj
+		for _index in range(self.MAX_SIMPLE_NEXT_TO_SEARCH):
 			try:
-				obj = obj.parent
+				obj = obj.simpleNext
 			except Exception:
 				return None
-		return None
-
-	def _findMessageListInTree(self, root: Any) -> Any | None:
-		"""Find the current chat message list in an object tree."""
-		if root is None:
-			return None
-
-		queue = deque([root])
-		inspectedCount = 0
-		while queue and inspectedCount < self.MAX_DESCENDANTS_TO_SEARCH:
-			obj = queue.popleft()
-			inspectedCount += 1
+			if obj is None:
+				return None
 			if self._isMessageList(obj):
 				return obj
-			queue.extend(self._getObjectChildren(obj))
 		return None
 
 	def _findCurrentMessageList(self) -> Any | None:
-		"""Return the best current chat message list candidate."""
+		"""Return the current message list for input-field review."""
 		try:
-			messageList = self._getContainingMessageList(api.getFocusObject())
+			focus = api.getFocusObject()
 		except Exception:
-			messageList = None
-		if messageList is not None:
-			return messageList
+			focus = None
+
+		if focus is not None and self._isMessageInputObject(focus):
+			messageList = self._findMessageListAfterInput(focus)
+			if messageList is not None:
+				return messageList
 
 		if self.activeMessageList is not None and self._isMessageList(self.activeMessageList):
 			return self.activeMessageList
 
-		try:
-			messageList = self._findMessageListInTree(api.getForegroundObject())
-		except Exception:
-			messageList = None
-		if messageList is not None:
-			return messageList
-
-		return None
-
-	def _findAncestorByAutomationID(self, obj: Any | None, automationID: str) -> Any | None:
-		"""Return the nearest ancestor with the given AutomationId."""
-		current = obj
-		while current is not None:
-			if self._getObjectAutomationID(current) == automationID:
-				return current
-			try:
-				current = current.parent
-			except Exception:
-				return None
-		return None
-
-	def _findDescendantByAutomationID(
-		self,
-		root: Any | None,
-		automationID: str,
-		maxObjects: int = 160,
-	) -> Any | None:
-		"""Return the first bounded descendant with the given AutomationId."""
-		if root is None:
-			return None
-		queue = deque([root])
-		inspectedCount = 0
-		while queue and inspectedCount < maxObjects:
-			obj = queue.popleft()
-			inspectedCount += 1
-			if self._getObjectAutomationID(obj) == automationID:
-				return obj
-			queue.extend(self._getObjectChildren(obj))
 		return None
 
 	def _getCachedUIAProperty(self, element: Any, propertyID: int) -> Any:
@@ -357,8 +283,8 @@ class AppModule(appModuleHandler.AppModule):
 				records.append(record)
 		return records
 
-	def _createChatState(self) -> dict[str, Any]:
-		"""Create message review state for one chat."""
+	def _createReviewState(self) -> dict[str, Any]:
+		"""Create temporary message review state."""
 		return {
 			"messages": [],
 			"currentIndex": -1,
@@ -366,85 +292,6 @@ class AppModule(appModuleHandler.AppModule):
 			"visibleStart": None,
 			"visibleEnd": None,
 		}
-
-	def _isScrollMergeProtected(self) -> bool:
-		"""Return whether queue refreshes must stay attached to the active chat."""
-		return self.isBoundaryScrollPending
-
-	def _getIndependentChatWindowKey(self, obj: Any | None = None) -> Any | None:
-		"""Return a stable key for an independent WeChat chat window."""
-		current = obj
-		while current is not None:
-			automationID = self._getObjectAutomationID(current)
-			if automationID.startswith(self.CHAT_SINGLE_WINDOW_UIA_ID_PREFIX):
-				return ("chatSingleWindow", automationID)
-			try:
-				current = current.parent
-			except Exception:
-				break
-
-		try:
-			foreground = api.getForegroundObject()
-		except Exception:
-			return None
-		automationID = self._getObjectAutomationID(foreground)
-		if automationID and automationID.startswith(self.CHAT_SINGLE_WINDOW_UIA_ID_PREFIX):
-			return ("chatSingleWindow", automationID)
-		return None
-
-	def _getChatTitleText(self, titleRoot: Any | None) -> str | None:
-		"""Return the selected chat title text from the confirmed title node."""
-		if titleRoot is None:
-			return None
-
-		queue = deque([titleRoot])
-		inspectedCount = 0
-		while queue and inspectedCount < 80:
-			obj = queue.popleft()
-			inspectedCount += 1
-			automationID = self._getObjectAutomationID(obj)
-			if "current_chat" in automationID:
-				return self._getObjectText(obj)
-			queue.extend(self._getObjectChildren(obj))
-		return None
-
-	def _getTiledChatTitleKey(self, messageList: Any | None) -> Any | None:
-		"""Return a key from the selected chat title in the tiled main window."""
-		if messageList is None:
-			return None
-
-		chatMessagePage = self._findAncestorByAutomationID(messageList, self.CHAT_MESSAGE_PAGE_UIA_ID)
-		titleContent = self._findDescendantByAutomationID(
-			chatMessagePage,
-			self.CHAT_TITLE_LEFT_CONTENT_UIA_ID,
-		)
-		titleText = self._getChatTitleText(titleContent)
-		if titleText is None:
-			return None
-		return ("tiledChatTitle", titleText)
-
-	def _getChatKey(self, messageList: Any) -> Any | None:
-		"""Return the stable key for the current WeChat chat."""
-		return self._getIndependentChatWindowKey(messageList) or self._getTiledChatTitleKey(messageList)
-
-	def _getChatState(
-		self,
-		messageList: Any,
-	) -> tuple[Any, dict[str, Any]] | None:
-		"""Return the state belonging to the current chat."""
-		activeState = self.chatStates.get(self.activeChatKey)
-		if self._isScrollMergeProtected() and activeState is not None:
-			return self.activeChatKey, activeState
-
-		chatKey = self._getChatKey(messageList)
-		if chatKey is None:
-			return None
-
-		state = self.chatStates.get(chatKey)
-		if state is None:
-			state = self._createChatState()
-			self.chatStates[chatKey] = state
-		return chatKey, state
 
 	def _findSubList(self, source: list[str], target: list[str]) -> int | None:
 		"""Return the start index of a contiguous target list inside source."""
@@ -467,14 +314,17 @@ class AppModule(appModuleHandler.AppModule):
 		self,
 		state: dict[str, Any],
 		visibleMessages: list[str],
-	):
-		"""Merge currently visible messages into a chat's virtual queue."""
+	) -> bool:
+		"""Merge visible messages into the temporary queue.
+
+		@return: True when the queue was reset to an unrelated visible window.
+		"""
 		oldMessages = state["messages"]
 		if not oldMessages:
 			state["messages"] = visibleMessages
 			state["currentIndex"] = len(visibleMessages) - 1
-			self._trimChatState(state)
-			return
+			self._trimReviewState(state)
+			return True
 
 		oldIndex = state["currentIndex"]
 		wasAtLast = oldIndex >= len(oldMessages) - 1
@@ -484,7 +334,7 @@ class AppModule(appModuleHandler.AppModule):
 
 		visibleStart = self._findSubList(oldMessages, visibleMessages)
 		if visibleStart is not None:
-			return
+			return False
 
 		oldStart = self._findSubList(visibleMessages, oldMessages)
 		if oldStart is not None:
@@ -500,8 +350,8 @@ class AppModule(appModuleHandler.AppModule):
 				newMessages = visibleMessages[:prependCount] + oldMessages
 				indexOffset = prependCount
 			else:
-				if self._isScrollMergeProtected():
-					return
+				if self.isBoundaryScrollPending:
+					return False
 				newMessages = visibleMessages
 				didReplace = True
 
@@ -510,7 +360,8 @@ class AppModule(appModuleHandler.AppModule):
 			state["currentIndex"] = len(newMessages) - 1
 		else:
 			state["currentIndex"] = min(oldIndex + indexOffset, len(newMessages) - 1)
-		self._trimChatState(state)
+		self._trimReviewState(state)
+		return didReplace
 
 	def _updateVisibleWindow(
 		self,
@@ -528,8 +379,8 @@ class AppModule(appModuleHandler.AppModule):
 		state["visibleStart"] = visibleStart
 		state["visibleEnd"] = visibleStart + len(visibleMessages) - 1
 
-	def _trimChatState(self, state: dict[str, Any]):
-		"""Keep a chat queue within the configured maximum size."""
+	def _trimReviewState(self, state: dict[str, Any]):
+		"""Keep the temporary review queue within the configured maximum size."""
 		overflow = len(state["messages"]) - self.MAX_MESSAGE_QUEUE_SIZE
 		if overflow <= 0:
 			return
@@ -556,24 +407,21 @@ class AppModule(appModuleHandler.AppModule):
 		messageList: Any | None = None,
 		setNotificationBaseline: bool = False,
 	) -> dict[str, Any] | None:
-		"""Refresh and activate the queue for the current chat."""
+		"""Refresh the temporary queue for the current chat view."""
+		self.reviewQueueResetOnLastRefresh = False
 		if messageList is None:
 			messageList = self._findCurrentMessageList()
 		if messageList is None:
-			return self.chatStates.get(self.activeChatKey)
+			return self.reviewState
 
 		records = self._collectVisibleMessageRecords(messageList)
 		if not records:
-			return self.chatStates.get(self.activeChatKey)
+			return self.reviewState
 
-		chatState = self._getChatState(messageList)
-		if chatState is None:
-			return None
-		chatKey, state = chatState
+		state = self.reviewState
 		visibleMessages = [record["text"] for record in records]
-		self._mergeVisibleMessages(state, visibleMessages)
+		self.reviewQueueResetOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
 		self._updateVisibleWindow(state, records)
-		self.activeChatKey = chatKey
 		self.activeMessageList = messageList
 		if setNotificationBaseline:
 			self._setNotificationBaseline(state, records)
@@ -802,11 +650,11 @@ class AppModule(appModuleHandler.AppModule):
 		if not isTargetScrollbar:
 			return nextHandler()
 
-		previousChatKey = self.activeChatKey
 		messageList = obj.parent
 		state = self.refreshMessageQueue(messageList)
 		if state is None:
 			return nextHandler()
+		queueWasReset = self.reviewQueueResetOnLastRefresh
 
 		try:
 			latestMessage = messageList.lastChild
@@ -819,7 +667,7 @@ class AppModule(appModuleHandler.AppModule):
 		currentMessageInfo = (latestRecord["info"], latestRecord["text"])
 		if currentMessageInfo == state.get("lastReadMessageInfo"):
 			return nextHandler()
-		if previousChatKey != self.activeChatKey:
+		if queueWasReset:
 			state["lastReadMessageInfo"] = currentMessageInfo
 			return nextHandler()
 
@@ -832,7 +680,7 @@ class AppModule(appModuleHandler.AppModule):
 		"""
 		Handle focus changes in WeChat.
 
-		Entering the message list activates the matching chat queue and marks
+		Entering the message list activates the temporary review queue and marks
 		the current newest message as the notification baseline.
 		"""
 		if obj.role == controlTypes.Role.TOOLBAR and self._getObjectAutomationID(obj) == self.MAIN_TABBAR_UIA_ID:
@@ -852,6 +700,8 @@ class AppModule(appModuleHandler.AppModule):
 			self.refreshMessageQueue(obj.parent, setNotificationBaseline=True)
 		elif self._isMessageList(obj):
 			self.refreshMessageQueue(obj, setNotificationBaseline=True)
+		elif self._isMessageInputObject(obj):
+			self.refreshMessageQueue(setNotificationBaseline=True)
 		nextHandler()
 
 	def notifyUserActivity(self):
@@ -882,10 +732,11 @@ class AppModule(appModuleHandler.AppModule):
 		if focus is None:
 			return False
 
-		try:
-			return focus.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID
-		except Exception:
-			return False
+		return self._isMessageInputObject(focus)
+
+	def _isMessageInputObject(self, obj: Any) -> bool:
+		"""Return whether an object is the WeChat chat message input."""
+		return self._getObjectAutomationID(obj) == self.MESSAGE_INPUT_UIA_ID
 
 	def _sendReviewGestureThrough(self, gesture: Any):
 		"""Let WeChat or NVDA handle a review gesture outside the message input."""
@@ -908,28 +759,21 @@ class AppModule(appModuleHandler.AppModule):
 			return False
 		return self._speakRelativeMessage(state, direction)
 
-	def _getCachedActiveChatState(self) -> dict[str, Any] | None:
-		"""Return the active chat state without refreshing visible messages."""
-		messageList = self._findCurrentMessageList()
-		if messageList is None:
-			return None
-		chatKey = self._getChatKey(messageList)
-		if chatKey != self.activeChatKey:
-			return None
-		state = self.chatStates.get(chatKey)
+	def _getCachedReviewState(self) -> dict[str, Any] | None:
+		"""Return the temporary review state without refreshing visible messages."""
+		state = self.reviewState
 		if state is None or not state["messages"]:
 			return None
-		self.activeMessageList = messageList
 		return state
 
-	def _getActiveChatState(self, refresh: bool = True) -> dict[str, Any] | None:
-		"""Return the refreshed state for the active chat."""
+	def _getActiveReviewState(self, refresh: bool = True) -> dict[str, Any] | None:
+		"""Return the active temporary review state."""
 		if refresh:
-			state = self._getCachedActiveChatState()
+			state = self._getCachedReviewState()
 			if state is None:
 				state = self.refreshMessageQueue(setNotificationBaseline=True)
 		else:
-			state = self.chatStates.get(self.activeChatKey)
+			state = self.reviewState
 		if state and state["messages"]:
 			return state
 		ui.message(self.NO_MESSAGES_TEXT)
@@ -946,7 +790,7 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		if self.isBoundaryScrollPending:
 			return
-		state = self._getActiveChatState()
+		state = self._getActiveReviewState()
 		if state is None:
 			return
 		self._readReviewDirection(state, direction)
@@ -958,7 +802,7 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+upArrow",
 	)
 	def script_readPreviousMessage(self, gesture: Any):
-		"""Read the previous message from the active chat queue."""
+		"""Read the previous message from the active review queue."""
 		self._handleRelativeReviewGesture(gesture, -1)
 
 	@script(
@@ -968,7 +812,7 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+downArrow",
 	)
 	def script_readNextMessage(self, gesture: Any):
-		"""Read the next message from the active chat queue."""
+		"""Read the next message from the active review queue."""
 		self._handleRelativeReviewGesture(gesture, 1)
 
 	@script(
@@ -978,7 +822,7 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+end",
 	)
 	def script_readLastMessage(self, gesture: Any):
-		"""Read the newest message from the active chat queue."""
+		"""Read the newest message from the active review queue."""
 		if not self._isMessageInputFocus():
 			self._sendReviewGestureThrough(gesture)
 			return
@@ -987,7 +831,7 @@ class AppModule(appModuleHandler.AppModule):
 			self.scrollLoadTimer = None
 		if self.isBoundaryScrollPending:
 			self.isBoundaryScrollPending = False
-		state = self._getActiveChatState()
+		state = self._getActiveReviewState()
 		if state is None:
 			return
 
@@ -1010,5 +854,4 @@ class AppModule(appModuleHandler.AppModule):
 			self.MODE_SOUND_AND_SPEECH: _("Sound and speech"),
 		}
 		ui.message(modeMessages.get(self.notificationMode))
-		for state in self.chatStates.values():
-			state["lastReadMessageInfo"] = None
+		self.reviewState["lastReadMessageInfo"] = None
