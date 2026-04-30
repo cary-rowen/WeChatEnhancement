@@ -51,14 +51,9 @@ class AppModule(appModuleHandler.AppModule):
 	CONFIG_KEY_NOTIFICATION_MODE = "notificationMode"
 	MAX_MESSAGE_QUEUE_SIZE = 200
 	MAX_DESCENDANTS_TO_SEARCH = 300
-	SCROLL_LOAD_DELAY = 100
-	MAX_BOUNDARY_SCROLL_ATTEMPTS = 8
-	PREFETCH_TARGET_REMAINING = 24
-	PREFETCH_VISIBLE_START_LIMIT = 1
-	PREFETCH_WHEEL_UNITS = 8
-	PREFETCH_LOAD_DELAY = 70
-	MAX_CHAINED_PREFETCHES = 4
-	PENDING_REVIEW_DRAIN_DELAY = 20
+	SCROLL_LOAD_DELAY = 25
+	MAX_BOUNDARY_SCROLL_ATTEMPTS = 4
+	PENDING_REVIEW_DRAIN_DELAY = 0
 	KEYEVENTF_EXTENDEDKEY = 0x0001
 	KEYEVENTF_KEYUP = 0x0002
 	# Translators: The name of the category in NVDA's input gestures dialog.
@@ -86,13 +81,8 @@ class AppModule(appModuleHandler.AppModule):
 		self.activeMessageList = None
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
-		self.prefetchLoadTimer = None
-		self.isPrefetchPending = False
-		self.isPrefetchRefresh = False
-		self.prefetchContext: dict[str, Any] | None = None
 		self.pendingReviewDirection: int | None = None
 		self.pendingReviewDrainTimer = None
-		self.deferredPrefetchContext: dict[str, Any] | None = None
 		self.isPendingReviewDrainDeferred = False
 		self.isReviewSpeechActive = False
 		self.lastQueuedSpeechIndex = 0
@@ -109,7 +99,6 @@ class AppModule(appModuleHandler.AppModule):
 
 	def terminate(self):
 		"""Stop pending timers before unloading the app module."""
-		self._cancelMessagePrefetch()
 		self._clearPendingReviewGesture()
 		self._clearDeferredReviewWork()
 		synthDriverHandler.pre_synthSpeak.unregister(self._onPreSynthSpeak)
@@ -158,17 +147,10 @@ class AppModule(appModuleHandler.AppModule):
 	def _getObjectUIAClassName(self, obj: Any) -> str:
 		"""Return an object's UIA class name when it is available."""
 		try:
-			element = obj.UIAElement
+			className = obj.UIAElement.CachedClassName
 		except Exception:
 			return ""
-		for attrName in ("CachedClassName", "cachedClassName", "currentClassName"):
-			try:
-				className = getattr(element, attrName)
-			except Exception:
-				continue
-			if className:
-				return className
-		return ""
+		return className or ""
 
 	def _getObjectChildren(self, obj: Any) -> list[Any]:
 		"""Return an object's children without letting traversal fail."""
@@ -367,6 +349,8 @@ class AppModule(appModuleHandler.AppModule):
 
 		try:
 			childrenCacheRequest = UIAHandler.handler.baseCacheRequest.clone()
+			childrenCacheRequest.addProperty(UIA.UIA_ControlTypePropertyId)
+			childrenCacheRequest.addProperty(UIA.UIA_NamePropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_AutomationIdPropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_BoundingRectanglePropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_ClassNamePropertyId)
@@ -395,25 +379,7 @@ class AppModule(appModuleHandler.AppModule):
 		messageList: Any,
 	) -> list[dict[str, Any]]:
 		"""Collect visible message records from the chat message list."""
-		records = self._collectVisibleMessageRecordsWithUIA(messageList)
-		if records:
-			return records
-
-		records = []
-		for child in self._getObjectChildren(messageList):
-			record = self._getMessageRecord(child)
-			if record is not None:
-				records.append(record)
-
-		if records:
-			return records
-
-		try:
-			record = self._getMessageRecord(messageList.lastChild)
-		except Exception:
-			record = None
-		records = [record] if record is not None else []
-		return records
+		return self._collectVisibleMessageRecordsWithUIA(messageList)
 
 	def _createChatState(self) -> dict[str, Any]:
 		"""Create message review state for one chat."""
@@ -427,7 +393,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _isScrollMergeProtected(self) -> bool:
 		"""Return whether queue refreshes must stay attached to the active chat."""
-		return self.isBoundaryScrollPending or self.isPrefetchRefresh
+		return self.isBoundaryScrollPending
 
 	def _getIndependentChatWindowKey(self, obj: Any | None = None) -> Any | None:
 		"""Return a stable key for an independent WeChat chat window."""
@@ -481,6 +447,10 @@ class AppModule(appModuleHandler.AppModule):
 			return None
 		return ("tiledChatTitle", titleText)
 
+	def _getChatKey(self, messageList: Any) -> Any | None:
+		"""Return the stable key for the current WeChat chat."""
+		return self._getIndependentChatWindowKey(messageList) or self._getTiledChatTitleKey(messageList)
+
 	def _getChatState(
 		self,
 		messageList: Any,
@@ -490,10 +460,7 @@ class AppModule(appModuleHandler.AppModule):
 		if self._isScrollMergeProtected() and activeState is not None:
 			return self.activeChatKey, activeState
 
-		chatKey = (
-			self._getIndependentChatWindowKey(messageList)
-			or self._getTiledChatTitleKey(messageList)
-		)
+		chatKey = self._getChatKey(messageList)
 		if chatKey is None:
 			return None
 
@@ -714,26 +681,8 @@ class AppModule(appModuleHandler.AppModule):
 				pass
 		return True
 
-	def _stopMessagePrefetchTimer(self):
-		"""Stop the pending message prefetch timer."""
-		if self.prefetchLoadTimer and self.prefetchLoadTimer.IsRunning():
-			self.prefetchLoadTimer.Stop()
-		self.prefetchLoadTimer = None
-
-	def _clearMessagePrefetchState(self):
-		"""Clear message prefetch state without moving the UI."""
-		self.isPrefetchPending = False
-		self.isPrefetchRefresh = False
-		self.prefetchContext = None
-
-	def _cancelMessagePrefetch(self):
-		"""Cancel any pending message prefetch."""
-		self._stopMessagePrefetchTimer()
-		self._clearMessagePrefetchState()
-
 	def _clearDeferredReviewWork(self):
 		"""Clear review work that is waiting for current speech to finish."""
-		self.deferredPrefetchContext = None
 		self.isPendingReviewDrainDeferred = False
 
 	def _isSpeechActive(self) -> bool:
@@ -751,13 +700,13 @@ class AppModule(appModuleHandler.AppModule):
 	def _onSynthIndexReached(self, synth: synthDriverHandler.SynthDriver, index: int):
 		"""Track the latest speech index reached by the synthesizer."""
 		self.lastReachedSpeechIndex = index
-		if self.deferredPrefetchContext is not None or self.isPendingReviewDrainDeferred:
+		if self.isPendingReviewDrainDeferred:
 			core.callLater(0, self._runDeferredReviewWork)
 
 	def _onSynthDoneSpeaking(self):
 		"""Run deferred review work after NVDA finishes speaking."""
 		self.isReviewSpeechActive = False
-		if self.deferredPrefetchContext is None and not self.isPendingReviewDrainDeferred:
+		if not self.isPendingReviewDrainDeferred:
 			return
 		core.callLater(0, self._runDeferredReviewWork)
 
@@ -766,22 +715,6 @@ class AppModule(appModuleHandler.AppModule):
 		self.isReviewSpeechActive = True
 		ui.message(text)
 
-	def _deferMessagePrefetchUntilSpeechDone(
-		self,
-		state: dict[str, Any],
-		direction: int,
-		chainCount: int = 0,
-	):
-		"""Start prefetch only after the boundary message has finished speaking."""
-		if direction >= 0:
-			return
-		self.deferredPrefetchContext = {
-			"chainCount": chainCount,
-			"chatKey": self.activeChatKey,
-			"direction": direction,
-			"state": state,
-		}
-
 	def _deferPendingReviewDrainUntilSpeechDone(self):
 		"""Read queued review gestures after the boundary message has finished speaking."""
 		if self.pendingReviewDirection is None:
@@ -789,7 +722,7 @@ class AppModule(appModuleHandler.AppModule):
 		self.isPendingReviewDrainDeferred = True
 
 	def _runDeferredReviewWork(self):
-		"""Run pending review or prefetch work once speech has completed."""
+		"""Run a pending review gesture once speech has completed."""
 		if self._isSpeechActive():
 			return
 		if self.isBoundaryScrollPending:
@@ -802,187 +735,6 @@ class AppModule(appModuleHandler.AppModule):
 			self.isPendingReviewDrainDeferred = False
 			self._schedulePendingReviewDrain()
 			return
-
-		context = self.deferredPrefetchContext
-		self.deferredPrefetchContext = None
-		if context is None:
-			return
-		if context.get("chatKey") != self.activeChatKey:
-			return
-		if self.pendingReviewDirection is not None:
-			return
-		self._maybeStartMessagePrefetch(
-			context["state"],
-			context["direction"],
-			context.get("chainCount", 0),
-		)
-
-	def _scheduleMessagePrefetchFinish(self):
-		"""Schedule a quiet refresh to finish the active message prefetch."""
-		if not self.isPrefetchPending or self.prefetchContext is None:
-			return
-		self._stopMessagePrefetchTimer()
-		self.prefetchLoadTimer = wx.CallLater(
-			self.PREFETCH_LOAD_DELAY,
-			self._finishMessagePrefetch,
-			"timer",
-		)
-
-	def _restorePrefetchReviewPosition(
-		self,
-		state: dict[str, Any],
-		oldMessages: list[str],
-		oldIndex: int,
-	) -> bool:
-		"""Restore the review cursor after a verified prefetch merge."""
-		oldMessagesStart = self._findSubList(state["messages"], oldMessages)
-		if oldMessagesStart is not None and 0 <= oldIndex < len(oldMessages):
-			state["currentIndex"] = min(oldMessagesStart + oldIndex, len(state["messages"]) - 1)
-			return True
-		return self._restoreReviewPosition(state, oldMessages, oldIndex)
-
-	def _performMessagePrefetchScroll(self, context: dict[str, Any]) -> bool:
-		"""Perform one background prefetch scroll."""
-		messageList = context.get("messageList")
-		if messageList is None:
-			return False
-		scrollSteps = winUser.WHEEL_DELTA * self.PREFETCH_WHEEL_UNITS
-		return self._scrollMessageList(messageList, scrollSteps)
-
-	def _shouldContinueMessagePrefetch(self, state: dict[str, Any], chainCount: int) -> bool:
-		"""Return whether another background prefetch page should be requested."""
-		if chainCount >= self.MAX_CHAINED_PREFETCHES:
-			return False
-		currentIndex = state.get("currentIndex", -1)
-		visibleStart = state.get("visibleStart")
-		return (
-			0 <= currentIndex < self.PREFETCH_TARGET_REMAINING
-			and visibleStart is not None
-			and visibleStart <= self.PREFETCH_VISIBLE_START_LIMIT
-		)
-
-	def _scheduleChainedMessagePrefetch(self, state: dict[str, Any], chainCount: int):
-		"""Start the next prefetch page after the current merge settles."""
-		wx.CallLater(
-			1,
-			self._maybeStartMessagePrefetch,
-			state,
-			-1,
-			chainCount,
-		)
-
-	def _finishMessagePrefetch(self, reason: str = "timer") -> dict[str, Any] | None:
-		"""Merge one completed message prefetch when ordering is verified."""
-		context = self.prefetchContext
-		if not self.isPrefetchPending or context is None:
-			return None
-		if reason == "timer":
-			self.prefetchLoadTimer = None
-		if context.get("chatKey") != self.activeChatKey:
-			self._cancelMessagePrefetch()
-			return None
-
-		oldMessages = context["oldMessages"]
-		oldIndex = context["oldIndex"]
-		self.isPrefetchRefresh = True
-		try:
-			state = self.refreshMessageQueue(setNotificationBaseline=True)
-		finally:
-			self.isPrefetchRefresh = False
-		if not state or not state["messages"]:
-			self._stopMessagePrefetchTimer()
-			self._clearMessagePrefetchState()
-			return state
-
-		self._restorePrefetchReviewPosition(state, oldMessages, oldIndex)
-		oldMessagesStart = self._findSubList(state["messages"], oldMessages)
-		if oldMessagesStart is None or oldMessagesStart <= 0:
-			self._stopMessagePrefetchTimer()
-			self._clearMessagePrefetchState()
-			return state
-
-		chainCount = context.get("chainCount", 0) + 1
-		self._stopMessagePrefetchTimer()
-		self._clearMessagePrefetchState()
-		if reason == "timer" and self._shouldContinueMessagePrefetch(state, chainCount):
-			self._scheduleChainedMessagePrefetch(state, chainCount)
-		return state
-
-	def _maybeStartMessagePrefetch(
-		self,
-		state: dict[str, Any],
-		direction: int,
-		chainCount: int = 0,
-	):
-		"""Start a quiet older-message prefetch after a verified boundary read."""
-		if direction >= 0:
-			return
-		if self._isSpeechActive():
-			self._deferMessagePrefetchUntilSpeechDone(state, direction, chainCount)
-			return
-		if self.isBoundaryScrollPending or self.isPrefetchPending:
-			return
-		if self.activeChatKey is None or not state.get("messages"):
-			return
-		currentIndex = state["currentIndex"]
-		if currentIndex < 0:
-			return
-		if currentIndex >= self.PREFETCH_TARGET_REMAINING:
-			return
-		visibleStart = state.get("visibleStart")
-		if visibleStart is None or visibleStart > self.PREFETCH_VISIBLE_START_LIMIT:
-			return
-
-		messageList = self._findCurrentMessageList()
-		if messageList is None:
-			return
-
-		self.prefetchContext = {
-			"chatKey": self.activeChatKey,
-			"chainCount": chainCount,
-			"messageList": messageList,
-			"oldIndex": currentIndex,
-			"oldMessages": list(state["messages"]),
-		}
-		self.isPrefetchPending = True
-		if not self._performMessagePrefetchScroll(self.prefetchContext):
-			self._cancelMessagePrefetch()
-			return
-		self._scheduleMessagePrefetchFinish()
-
-	def _restoreReviewPosition(
-		self,
-		state: dict[str, Any],
-		oldMessages: list[str],
-		oldIndex: int,
-	) -> bool:
-		"""Restore the review cursor to the same message after queue refresh."""
-		messages = state["messages"]
-		if not messages or not oldMessages or oldIndex < 0 or oldIndex >= len(oldMessages):
-			return False
-
-		anchorText = oldMessages[oldIndex]
-		previousText = oldMessages[oldIndex - 1] if oldIndex > 0 else None
-		nextText = oldMessages[oldIndex + 1] if oldIndex < len(oldMessages) - 1 else None
-		bestIndex = None
-		bestScore = -1
-
-		for index, message in enumerate(messages):
-			if message != anchorText:
-				continue
-			score = 0
-			if previousText is not None and index > 0 and messages[index - 1] == previousText:
-				score += 2
-			if nextText is not None and index < len(messages) - 1 and messages[index + 1] == nextText:
-				score += 2
-			if score > bestScore:
-				bestIndex = index
-				bestScore = score
-
-		if bestIndex is not None:
-			state["currentIndex"] = bestIndex
-			return True
-		return False
 
 	def _speakRelativeMessage(self, state: dict[str, Any], direction: int) -> bool:
 		"""Speak a message relative to the current review cursor."""
@@ -1014,33 +766,19 @@ class AppModule(appModuleHandler.AppModule):
 		nextIndex = state["currentIndex"] + direction
 		return nextIndex < 0 or nextIndex >= len(state["messages"])
 
-	def _isBoundaryTargetVisible(
-		self,
-		state: dict[str, Any],
-		targetIndex: int | None,
-	) -> bool:
-		"""Return whether a boundary scroll exposed the next review target."""
-		visibleStart = state.get("visibleStart")
-		visibleEnd = state.get("visibleEnd")
-		if targetIndex is None or visibleStart is None or visibleEnd is None:
-			return False
-		return visibleStart <= targetIndex <= visibleEnd
-
 	def _getBoundaryTargetIndex(
 		self,
 		state: dict[str, Any],
 		oldMessages: list[str],
-		oldIndex: int,
 		direction: int,
 	) -> int | None:
 		"""Return the exact queue index requested after a boundary scroll."""
 		oldMessagesStart = self._findSubList(state["messages"], oldMessages)
-		targetOldIndex = oldIndex + direction
-		if oldMessagesStart is not None and 0 <= targetOldIndex < len(oldMessages):
-			return oldMessagesStart + targetOldIndex
-		if oldMessagesStart is not None and direction < 0 and targetOldIndex < 0:
+		if oldMessagesStart is None:
+			return None
+		if direction < 0 and oldMessagesStart > 0:
 			return oldMessagesStart - 1
-		if oldMessagesStart is not None and direction > 0 and targetOldIndex >= len(oldMessages):
+		if direction > 0 and oldMessagesStart + len(oldMessages) < len(state["messages"]):
 			return oldMessagesStart + len(oldMessages)
 		return None
 
@@ -1053,7 +791,7 @@ class AppModule(appModuleHandler.AppModule):
 	):
 		"""Refresh after a boundary scroll and read the requested relative message."""
 		scheduledRetry = False
-		prefetchState = None
+		didSpeak = False
 		try:
 			if not self._isMessageInputFocus():
 				self._clearPendingReviewGesture()
@@ -1062,56 +800,36 @@ class AppModule(appModuleHandler.AppModule):
 			if not state or not state["messages"]:
 				return
 
-			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, oldIndex, direction)
-			targetWasCached = 0 <= oldIndex + direction < len(oldMessages)
-			targetVisible = self._isBoundaryTargetVisible(state, targetIndex)
-			if targetIndex is not None and (targetWasCached or targetVisible):
+			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, direction)
+			if targetIndex is not None:
 				if self._speakMessageAtIndex(state, targetIndex):
-					prefetchState = state
+					didSpeak = True
 					return
-			if targetWasCached:
-				restored = self._restoreReviewPosition(state, oldMessages, oldIndex)
-				if not restored:
-					oldMessagesStart = self._findSubList(state["messages"], oldMessages)
-					if oldMessagesStart is not None:
-						state["currentIndex"] = oldMessagesStart + oldIndex
-					else:
-						state["currentIndex"] = min(oldIndex, len(state["messages"]) - 1)
-				if self._speakRelativeMessage(state, direction):
-					prefetchState = state
-					return
-				return
-			if not targetVisible and nextAttempt <= self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
+			if nextAttempt <= self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
 				scheduledRetry = True
 				self._scrollBoundaryAndRead(state, direction, attempt=nextAttempt)
 				return
 
-			if not targetVisible and not targetWasCached:
-				restored = self._restoreReviewPosition(state, oldMessages, oldIndex)
-				if not restored:
-					oldMessagesStart = self._findSubList(state["messages"], oldMessages)
-					if oldMessagesStart is not None:
-						state["currentIndex"] = oldMessagesStart + oldIndex
-				return
+			oldMessagesStart = self._findSubList(state["messages"], oldMessages)
+			if oldMessagesStart is not None:
+				state["currentIndex"] = oldMessagesStart + oldIndex
+			return
 
 		finally:
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
-				if prefetchState is not None:
-					if self.pendingReviewDirection is not None:
-						self._deferPendingReviewDrainUntilSpeechDone()
-					else:
-						self._deferMessagePrefetchUntilSpeechDone(prefetchState, direction)
+				if didSpeak and self.pendingReviewDirection is not None:
+					self._deferPendingReviewDrainUntilSpeechDone()
 				elif self.pendingReviewDirection is not None:
 					self._schedulePendingReviewDrain()
 
 	def _getScrollWheelUnitsForAttempt(self, attempt: int) -> int:
 		"""Return the number of wheel detents to send for a boundary retry."""
-		if attempt >= 4:
-			return 16
 		if attempt >= 2:
-			return 12
-		return 8
+			return 8
+		if attempt >= 1:
+			return 6
+		return 4
 
 	def _performScrollAttempt(self, messageList: Any, direction: int, attempt: int) -> bool:
 		"""Perform one mouse wheel scroll attempt."""
@@ -1125,8 +843,6 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _scrollBoundaryAndRead(self, state: dict[str, Any], direction: int, attempt: int = 0):
 		"""Scroll beyond the visible boundary and read after WeChat updates the list."""
-		if self.isPrefetchPending:
-			self._cancelMessagePrefetch()
 		messageList = self._findCurrentMessageList()
 		if messageList is None:
 			self.isBoundaryScrollPending = False
@@ -1175,9 +891,6 @@ class AppModule(appModuleHandler.AppModule):
 		if not isTargetScrollbar:
 			return nextHandler()
 
-		if self.isPrefetchPending:
-			return nextHandler()
-
 		previousChatKey = self.activeChatKey
 		messageList = obj.parent
 		state = self.refreshMessageQueue(messageList)
@@ -1224,11 +937,9 @@ class AppModule(appModuleHandler.AppModule):
 			isMessageItem = False
 
 		if isMessageItem:
-			self._cancelMessagePrefetch()
 			self.notifyUserActivity()
 			self.refreshMessageQueue(obj.parent, setNotificationBaseline=True)
 		elif self._isMessageList(obj):
-			self._cancelMessagePrefetch()
 			self.refreshMessageQueue(obj, setNotificationBaseline=True)
 		nextHandler()
 
@@ -1321,10 +1032,7 @@ class AppModule(appModuleHandler.AppModule):
 			self._clearPendingReviewGesture()
 			return
 
-		prefetchedState = None
-		if self.isPrefetchPending:
-			prefetchedState = self._finishMessagePrefetch("pendingReview")
-		state = prefetchedState or self._getActiveChatState(refresh=False)
+		state = self._getActiveChatState(refresh=False)
 		if state is None:
 			self._clearPendingReviewGesture()
 			return
@@ -1337,13 +1045,27 @@ class AppModule(appModuleHandler.AppModule):
 		if not didSpeak:
 			self._clearPendingReviewGesture()
 			return
-		if direction < 0:
-			self._deferMessagePrefetchUntilSpeechDone(state, direction)
+
+	def _getCachedActiveChatState(self) -> dict[str, Any] | None:
+		"""Return the active chat state without refreshing visible messages."""
+		messageList = self._findCurrentMessageList()
+		if messageList is None:
+			return None
+		chatKey = self._getChatKey(messageList)
+		if chatKey != self.activeChatKey:
+			return None
+		state = self.chatStates.get(chatKey)
+		if state is None or not state["messages"]:
+			return None
+		self.activeMessageList = messageList
+		return state
 
 	def _getActiveChatState(self, refresh: bool = True) -> dict[str, Any] | None:
 		"""Return the refreshed state for the active chat."""
 		if refresh:
-			state = self.refreshMessageQueue(setNotificationBaseline=True)
+			state = self._getCachedActiveChatState()
+			if state is None:
+				state = self.refreshMessageQueue(setNotificationBaseline=True)
 		else:
 			state = self.chatStates.get(self.activeChatKey)
 		if state and state["messages"]:
@@ -1355,7 +1077,6 @@ class AppModule(appModuleHandler.AppModule):
 		self,
 		gesture: Any,
 		direction: int,
-		prefetchFinishReason: str,
 	):
 		"""Handle Alt+Arrow message review from the WeChat message input."""
 		if not self._isMessageInputFocus():
@@ -1366,10 +1087,7 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		self._clearPendingReviewGesture()
 		self._clearDeferredReviewWork()
-		prefetchedState = None
-		if self.isPrefetchPending:
-			prefetchedState = self._finishMessagePrefetch(prefetchFinishReason)
-		state = prefetchedState or self._getActiveChatState(refresh=not self.isPrefetchPending)
+		state = self._getActiveChatState()
 		if state is None:
 			return
 		self._readReviewDirection(state, direction)
@@ -1382,7 +1100,7 @@ class AppModule(appModuleHandler.AppModule):
 	)
 	def script_readPreviousMessage(self, gesture: Any):
 		"""Read the previous message from the active chat queue."""
-		self._handleRelativeReviewGesture(gesture, -1, "readPrevious")
+		self._handleRelativeReviewGesture(gesture, -1)
 
 	@script(
 		# Translators: Description for the command that reads the next WeChat message.
@@ -1392,7 +1110,7 @@ class AppModule(appModuleHandler.AppModule):
 	)
 	def script_readNextMessage(self, gesture: Any):
 		"""Read the next message from the active chat queue."""
-		self._handleRelativeReviewGesture(gesture, 1, "readNext")
+		self._handleRelativeReviewGesture(gesture, 1)
 
 	@script(
 		# Translators: Description for the command that reads the last WeChat message.
@@ -1412,8 +1130,6 @@ class AppModule(appModuleHandler.AppModule):
 		if self.isBoundaryScrollPending:
 			self.isBoundaryScrollPending = False
 		self._clearDeferredReviewWork()
-		if self.isPrefetchPending:
-			self._cancelMessagePrefetch()
 		state = self._getActiveChatState()
 		if state is None:
 			return
