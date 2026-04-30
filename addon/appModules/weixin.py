@@ -15,9 +15,11 @@ import api
 import appModuleHandler
 import config
 import controlTypes
+import core
 import eventHandler
 import mouseHandler
 import speech
+import synthDriverHandler
 import ui
 import UIAHandler
 import winUser
@@ -48,6 +50,10 @@ class AppModule(appModuleHandler.AppModule):
 	PREFETCH_WHEEL_UNITS = 8
 	PREFETCH_LOAD_DELAY = 70
 	MAX_CHAINED_PREFETCHES = 4
+	MAX_PENDING_REVIEW_GESTURES = 1
+	PENDING_REVIEW_DRAIN_DELAY = 20
+	KEYEVENTF_EXTENDEDKEY = 0x0001
+	KEYEVENTF_KEYUP = 0x0002
 	# Translators: The name of the category in NVDA's input gestures dialog.
 	SCRIPT_CATEGORY = _("PC WeChat Enhancement")
 	SOUND_NEW_MESSAGE = join(dirname(__file__), "popup.wav")
@@ -78,6 +84,16 @@ class AppModule(appModuleHandler.AppModule):
 		self.isPrefetchPending = False
 		self.isPrefetchRefresh = False
 		self.prefetchContext: dict[str, Any] | None = None
+		self.pendingReviewDirections: list[int] = []
+		self.pendingReviewDrainTimer = None
+		self.deferredPrefetchContext: dict[str, Any] | None = None
+		self.isPendingReviewDrainDeferred = False
+		self.isReviewSpeechActive = False
+		self.newSpeechIndex = 0
+		self.currentSpeechIndex = 0
+		synthDriverHandler.pre_synthSpeak.register(self._onPreSynthSpeak)
+		synthDriverHandler.synthIndexReached.register(self._onSynthIndexReached)
+		synthDriverHandler.synthDoneSpeaking.register(self._onSynthDoneSpeaking)
 
 		eventHandler.requestEvents(
 			"gainFocus",
@@ -88,6 +104,11 @@ class AppModule(appModuleHandler.AppModule):
 	def terminate(self):
 		"""Stop pending timers before unloading the app module."""
 		self._cancelMessagePrefetch("terminate")
+		self._clearPendingReviewGestures("terminate")
+		self._clearDeferredReviewWork("terminate")
+		synthDriverHandler.pre_synthSpeak.unregister(self._onPreSynthSpeak)
+		synthDriverHandler.synthIndexReached.unregister(self._onSynthIndexReached)
+		synthDriverHandler.synthDoneSpeaking.unregister(self._onSynthDoneSpeaking)
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.scrollLoadTimer = None
@@ -743,6 +764,33 @@ class AppModule(appModuleHandler.AppModule):
 		]
 		return points
 
+	def _isKeyDown(self, vkCode: int) -> bool:
+		"""Return whether a virtual key is currently down."""
+		try:
+			return bool(winUser.getAsyncKeyState(vkCode) & 32768)
+		except Exception:
+			return False
+
+	def _getPressedAltKeys(self) -> list[tuple[int, int]]:
+		"""Return pressed Alt keys and the flags needed to restore them."""
+		pressedKeys = []
+		altKeyFlags = (
+			(winUser.VK_LMENU, 0),
+			(winUser.VK_RMENU, self.KEYEVENTF_EXTENDEDKEY),
+		)
+		for vkCode, flags in altKeyFlags:
+			if self._isKeyDown(vkCode):
+				pressedKeys.append((vkCode, flags))
+		if not pressedKeys and self._isKeyDown(winUser.VK_MENU):
+			pressedKeys.append((winUser.VK_MENU, 0))
+		return pressedKeys
+
+	def _setSyntheticAltKeysUp(self, pressedKeys: list[tuple[int, int]], isKeyUp: bool):
+		"""Send synthetic Alt key-up or key-down events for wheel scrolling."""
+		keyUpFlag = self.KEYEVENTF_KEYUP if isKeyUp else 0
+		for vkCode, flags in pressedKeys:
+			winUser.keybd_event(vkCode, 0, flags | keyUpFlag, 0)
+
 	def _scrollMessageList(self, messageList: Any, scrollSteps: int) -> bool:
 		"""Scroll the message list by moving the mouse to the list temporarily."""
 		points = self._getMouseScrollPoints(messageList)
@@ -751,7 +799,14 @@ class AppModule(appModuleHandler.AppModule):
 			return False
 
 		oldX, oldY = winUser.getCursorPos()
+		pressedAltKeys = self._getPressedAltKeys()
 		try:
+			if pressedAltKeys:
+				log.io(
+					"WeChatEnhancement: "
+					f"scrollMessageList temporarily releasing Alt for wheel, keys={pressedAltKeys!r}",
+				)
+				self._setSyntheticAltKeysUp(pressedAltKeys, True)
 			for point in points:
 				winUser.setCursorPos(*point)
 				mouseHandler.scrollMouseWheel(scrollSteps, isVertical=True)
@@ -759,6 +814,12 @@ class AppModule(appModuleHandler.AppModule):
 			log.debugWarning("Unable to scroll the WeChat message list.", exc_info=True)
 			return False
 		finally:
+			if pressedAltKeys:
+				try:
+					self._setSyntheticAltKeysUp(list(reversed(pressedAltKeys)), False)
+					log.io("WeChatEnhancement: scrollMessageList restored Alt after wheel")
+				except Exception:
+					log.debugWarning("Unable to restore Alt after WeChat message list scroll.", exc_info=True)
 			try:
 				winUser.setCursorPos(oldX, oldY)
 			except Exception:
@@ -783,6 +844,116 @@ class AppModule(appModuleHandler.AppModule):
 			log.io(f"WeChatEnhancement: message prefetch cancelled, reason={reason}")
 		self._stopMessagePrefetchTimer()
 		self._clearMessagePrefetchState()
+
+	def _clearDeferredReviewWork(self, reason: str):
+		"""Clear review work that is waiting for current speech to finish."""
+		if self.deferredPrefetchContext is not None:
+			log.io(f"WeChatEnhancement: deferred message prefetch cleared, reason={reason}")
+		if self.isPendingReviewDrainDeferred:
+			log.io(f"WeChatEnhancement: deferred pending review drain cleared, reason={reason}")
+		self.deferredPrefetchContext = None
+		self.isPendingReviewDrainDeferred = False
+
+	def _isSpeechActive(self) -> bool:
+		"""Return whether NVDA appears to still be speaking."""
+		return self.isReviewSpeechActive or self.newSpeechIndex != self.currentSpeechIndex
+
+	def _onPreSynthSpeak(self, speechSequence: speech.SequenceItemT):
+		"""Track the latest speech index sent to the synthesizer."""
+		try:
+			index = speechSequence[-1].index
+		except Exception:
+			return
+		self.newSpeechIndex = index
+
+	def _onSynthIndexReached(self, synth: synthDriverHandler.SynthDriver, index: int):
+		"""Track the latest speech index reached by the synthesizer."""
+		self.currentSpeechIndex = index
+		if self.deferredPrefetchContext is not None or self.isPendingReviewDrainDeferred:
+			core.callLater(0, self._runDeferredReviewWork)
+
+	def _onSynthDoneSpeaking(self):
+		"""Run deferred review work after NVDA finishes speaking."""
+		self.isReviewSpeechActive = False
+		if self.deferredPrefetchContext is None and not self.isPendingReviewDrainDeferred:
+			return
+		log.io("WeChatEnhancement: review speech done; scheduling deferred review work")
+		core.callLater(0, self._runDeferredReviewWork)
+
+	def _speakReviewMessage(self, text: str):
+		"""Speak a review message and mark speech-sensitive work as blocked."""
+		self.isReviewSpeechActive = True
+		ui.message(text)
+
+	def _deferMessagePrefetchUntilSpeechDone(
+		self,
+		state: dict[str, Any],
+		direction: int,
+		reason: str,
+		chainCount: int = 0,
+	):
+		"""Start prefetch only after the boundary message has finished speaking."""
+		if direction >= 0:
+			return
+		self.deferredPrefetchContext = {
+			"chainCount": chainCount,
+			"chatKey": self.activeChatKey,
+			"direction": direction,
+			"reason": reason,
+			"state": state,
+		}
+		log.io(
+			"WeChatEnhancement: "
+			f"message prefetch deferred until speech done, reason={reason}, "
+			f"currentIndex={state.get('currentIndex')}, "
+			f"count={len(state.get('messages') or [])}, chainCount={chainCount}",
+		)
+
+	def _deferPendingReviewDrainUntilSpeechDone(self, reason: str):
+		"""Read queued review gestures after the boundary message has finished speaking."""
+		if not self.pendingReviewDirections:
+			return
+		self.isPendingReviewDrainDeferred = True
+		log.io(
+			"WeChatEnhancement: "
+			f"pending review drain deferred until speech done, reason={reason}, "
+			f"count={len(self.pendingReviewDirections)}",
+		)
+
+	def _runDeferredReviewWork(self):
+		"""Run pending review or prefetch work once speech has completed."""
+		if self._isSpeechActive():
+			log.io("WeChatEnhancement: deferred review work waiting: speech still active")
+			return
+		if self.isBoundaryScrollPending:
+			log.io("WeChatEnhancement: deferred review work skipped: boundary scroll pending")
+			return
+		if not self._isMessageInputFocus(logDetails=False):
+			self._clearDeferredReviewWork("focus left message input")
+			self._clearPendingReviewGestures("focus left message input")
+			return
+		if self.isPendingReviewDrainDeferred and self.pendingReviewDirections:
+			self.isPendingReviewDrainDeferred = False
+			log.io("WeChatEnhancement: running deferred pending review drain")
+			self._schedulePendingReviewDrain()
+			return
+
+		context = self.deferredPrefetchContext
+		self.deferredPrefetchContext = None
+		if context is None:
+			return
+		if context.get("chatKey") != self.activeChatKey:
+			log.io("WeChatEnhancement: deferred message prefetch discarded: chat changed")
+			return
+		if self.pendingReviewDirections:
+			log.io("WeChatEnhancement: deferred message prefetch skipped: queued review gesture exists")
+			return
+		self._maybeStartMessagePrefetch(
+			context["state"],
+			context["direction"],
+			context.get("chainCount", 0),
+			reason=context["reason"],
+		)
 
 	def _scheduleMessagePrefetchFinish(self):
 		"""Schedule a quiet refresh to finish the active message prefetch."""
@@ -856,6 +1027,7 @@ class AppModule(appModuleHandler.AppModule):
 			state,
 			-1,
 			chainCount,
+			"chain",
 		)
 
 	def _finishMessagePrefetch(self, reason: str = "timer") -> dict[str, Any] | None:
@@ -914,31 +1086,59 @@ class AppModule(appModuleHandler.AppModule):
 		state: dict[str, Any],
 		direction: int,
 		chainCount: int = 0,
+		reason: str = "review",
 	):
 		"""Start a quiet older-message prefetch after a verified boundary read."""
 		if direction >= 0:
 			return
+		if self._isSpeechActive():
+			log.io(
+				"WeChatEnhancement: "
+				f"message prefetch delayed: review speech active, reason={reason}, "
+				f"chainCount={chainCount}",
+			)
+			self._deferMessagePrefetchUntilSpeechDone(state, direction, reason, chainCount)
+			return
 		if self.isBoundaryScrollPending or self.isPrefetchPending:
+			log.io(
+				"WeChatEnhancement: "
+				f"message prefetch skipped, reason={reason}, "
+				f"boundaryPending={self.isBoundaryScrollPending}, "
+				f"prefetchPending={self.isPrefetchPending}",
+			)
 			return
 		if self.activeChatKey is None or not state.get("messages"):
+			log.io(
+				"WeChatEnhancement: "
+				f"message prefetch skipped, reason={reason}, no active messages",
+			)
 			return
 		currentIndex = state["currentIndex"]
 		if currentIndex < 0:
+			log.io(
+				"WeChatEnhancement: "
+				f"message prefetch skipped, reason={reason}, currentIndex={currentIndex}",
+			)
 			return
 		if currentIndex >= self.PREFETCH_TARGET_REMAINING:
+			log.io(
+				"WeChatEnhancement: "
+				f"message prefetch skipped, reason={reason}, "
+				f"currentIndex={currentIndex}, target={self.PREFETCH_TARGET_REMAINING}",
+			)
 			return
 		visibleStart = state.get("visibleStart")
 		if visibleStart is None or visibleStart > self.PREFETCH_VISIBLE_START_LIMIT:
 			log.io(
 				"WeChatEnhancement: "
-				f"message prefetch skipped, visibleStart={visibleStart}, "
+				f"message prefetch skipped, reason={reason}, visibleStart={visibleStart}, "
 				f"currentIndex={currentIndex}",
 			)
 			return
 
 		messageList = self._findCurrentMessageList(logDetails=False)
 		if messageList is None:
-			log.io("WeChatEnhancement: message prefetch skipped: no message list")
+			log.io(f"WeChatEnhancement: message prefetch skipped, reason={reason}, no message list")
 			return
 
 		oldVisibleSignature = state.get("visibleSignature") or ()
@@ -953,7 +1153,7 @@ class AppModule(appModuleHandler.AppModule):
 		self.isPrefetchPending = True
 		log.io(
 			"WeChatEnhancement: "
-			f"message prefetch start, currentIndex={currentIndex}, "
+			f"message prefetch start, reason={reason}, currentIndex={currentIndex}, "
 			f"visibleStart={visibleStart}, count={len(state['messages'])}, "
 			f"wheelUnits={self.PREFETCH_WHEEL_UNITS}, "
 			f"chainCount={chainCount}",
@@ -1021,7 +1221,7 @@ class AppModule(appModuleHandler.AppModule):
 			f"speakRelativeMessage index={nextIndex}, "
 			f"text={self._shortenForLog(state['messages'][nextIndex])!r}",
 		)
-		ui.message(state["messages"][nextIndex])
+		self._speakReviewMessage(state["messages"][nextIndex])
 		return True
 
 	def _speakMessageAtIndex(self, state: dict[str, Any], index: int, reason: str) -> bool:
@@ -1039,7 +1239,7 @@ class AppModule(appModuleHandler.AppModule):
 			f"speakMessageAtIndex index={index}, reason={reason}, "
 			f"text={self._shortenForLog(state['messages'][index])!r}",
 		)
-		ui.message(state["messages"][index])
+		self._speakReviewMessage(state["messages"][index])
 		return True
 
 	def _speakCurrentMessage(self, state: dict[str, Any]) -> bool:
@@ -1057,7 +1257,7 @@ class AppModule(appModuleHandler.AppModule):
 			f"speakCurrentMessage index={currentIndex}, "
 			f"text={self._shortenForLog(state['messages'][currentIndex])!r}",
 		)
-		ui.message(state["messages"][currentIndex])
+		self._speakReviewMessage(state["messages"][currentIndex])
 		return True
 
 	def _handleBoundaryLoadFailure(self, state: dict[str, Any] | None, direction: int, reason: str):
@@ -1178,6 +1378,10 @@ class AppModule(appModuleHandler.AppModule):
 			self._logQueueSnapshot("before boundary scroll queue", oldMessages)
 			self._logQueueSnapshot("before boundary scroll visible", oldVisibleMessages)
 		try:
+			if not self._isMessageInputFocus(logDetails=False):
+				log.io("WeChatEnhancement: readAfterBoundaryScroll stopped: focus left message input")
+				self._clearPendingReviewGestures("focus left message input during boundary scroll")
+				return
 			state = self.refreshMessageQueue(
 				setNotificationBaseline=True,
 				logDetails=shouldLogAttemptDetails,
@@ -1253,7 +1457,16 @@ class AppModule(appModuleHandler.AppModule):
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
 				if prefetchState is not None:
-					self._maybeStartMessagePrefetch(prefetchState, direction)
+					if self.pendingReviewDirections:
+						self._deferPendingReviewDrainUntilSpeechDone("boundaryRead")
+					else:
+						self._deferMessagePrefetchUntilSpeechDone(prefetchState, direction, "boundaryRead")
+				elif self.pendingReviewDirections:
+					log.io(
+						"WeChatEnhancement: "
+						"boundary load did not produce a message; retrying queued review gesture",
+					)
+					self._schedulePendingReviewDrain()
 
 	def _getScrollWheelUnitsForAttempt(self, attempt: int) -> int:
 		"""Return the number of wheel detents to send for a boundary retry."""
@@ -1293,6 +1506,7 @@ class AppModule(appModuleHandler.AppModule):
 		if messageList is None:
 			log.io("WeChatEnhancement: scrollBoundaryAndRead no message list")
 			self.isBoundaryScrollPending = False
+			self._clearPendingReviewGestures("boundary scroll has no message list")
 			self._handleBoundaryLoadFailure(state, direction, "no message list")
 			return
 
@@ -1322,6 +1536,7 @@ class AppModule(appModuleHandler.AppModule):
 				self._scrollBoundaryAndRead(state, direction, attempt=attempt + 1)
 				return
 			self.isBoundaryScrollPending = False
+			self._clearPendingReviewGestures("boundary scroll attempt failed")
 			self._handleBoundaryLoadFailure(state, direction, "scroll attempt failed")
 			return
 
@@ -1442,6 +1657,228 @@ class AppModule(appModuleHandler.AppModule):
 		if self.notificationMode == self.MODE_SOUND_AND_SPEECH:
 			ui.message(messageObj.name)
 
+	def _getObjectSummaryForLog(self, obj: Any | None) -> str:
+		"""Return a concise object summary for diagnostic logs."""
+		if obj is None:
+			return "<None>"
+		parts = []
+		for attr in ("role", "UIAAutomationId", "name", "windowClassName"):
+			try:
+				value = getattr(obj, attr)
+			except Exception:
+				continue
+			if value is None or value == "":
+				continue
+			parts.append(f"{attr}={self._shortenForLog(value)!r}")
+		return ", ".join(parts) if parts else repr(obj)
+
+	def _isEditableObject(self, obj: Any) -> bool:
+		"""Return whether an object behaves like an editable text field."""
+		try:
+			states = obj.states
+		except Exception:
+			states = set()
+		try:
+			if controlTypes.State.EDITABLE in states:
+				return True
+		except Exception:
+			pass
+		try:
+			role = obj.role
+		except Exception:
+			return False
+		return role in (controlTypes.Role.EDITABLETEXT, controlTypes.Role.RICHEDIT)
+
+	def _isInMessageInputRegion(self, obj: Any, messageList: Any) -> bool:
+		"""Return whether an editable focus is located in the chat input region."""
+		objRect = self._getObjectLocation(obj)
+		listRect = self._getObjectLocation(messageList)
+		if objRect is None or listRect is None:
+			log.io(
+				"WeChatEnhancement: "
+				"message input geometry unavailable; accepting editable focus",
+			)
+			return True
+
+		objLeft, objTop, objWidth, _objHeight = objRect
+		listLeft, listTop, listWidth, listHeight = listRect
+		objCenterX = objLeft + int(objWidth / 2)
+		listRight = listLeft + listWidth
+		listBottom = listTop + listHeight
+		isInChatColumn = listLeft - 40 <= objCenterX <= listRight + 40
+		isBelowMessageList = objTop >= listBottom - 40
+		if isInChatColumn and isBelowMessageList:
+			return True
+
+		log.io(
+			"WeChatEnhancement: "
+			f"editable focus rejected by geometry, focusRect={objRect!r}, "
+			f"messageListRect={listRect!r}",
+		)
+		return False
+
+	def _isMessageInputFocus(self, logDetails: bool = True) -> bool:
+		"""Return whether the current focus is the WeChat chat message input."""
+		try:
+			focus = api.getFocusObject()
+		except Exception as e:
+			if logDetails:
+				log.io(f"WeChatEnhancement: review gesture passed through: no focus object, error={e!r}")
+			return False
+
+		if focus is None:
+			if logDetails:
+				log.io("WeChatEnhancement: review gesture passed through: focus is None")
+			return False
+
+		if self._getContainingMessageList(focus) is not None:
+			if logDetails:
+				log.io(
+					"WeChatEnhancement: "
+					"review gesture passed through: focus is inside message list, "
+					f"focus={self._getObjectSummaryForLog(focus)}",
+				)
+			return False
+
+		if not self._isEditableObject(focus):
+			if logDetails:
+				log.io(
+					"WeChatEnhancement: "
+					"review gesture passed through: focus is not editable, "
+					f"focus={self._getObjectSummaryForLog(focus)}",
+				)
+			return False
+
+		messageList = self._findCurrentMessageList(logDetails=False)
+		if messageList is None:
+			if logDetails:
+				log.io(
+					"WeChatEnhancement: "
+					"review gesture passed through: editable focus has no message list, "
+					f"focus={self._getObjectSummaryForLog(focus)}",
+				)
+			return False
+
+		if not self._isInMessageInputRegion(focus, messageList):
+			if logDetails:
+				log.io(
+					"WeChatEnhancement: "
+					"review gesture passed through: editable focus is outside message input, "
+					f"focus={self._getObjectSummaryForLog(focus)}",
+				)
+			return False
+
+		return True
+
+	def _sendReviewGestureThrough(self, gesture: Any, reason: str):
+		"""Let WeChat or NVDA handle a review gesture outside the message input."""
+		log.io(f"WeChatEnhancement: review gesture sent through, reason={reason}")
+		self._clearPendingReviewGestures(reason)
+		self._clearDeferredReviewWork(reason)
+		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
+			self.scrollLoadTimer.Stop()
+			self.scrollLoadTimer = None
+		if self.isBoundaryScrollPending:
+			log.io(f"WeChatEnhancement: boundary scroll cancelled, reason={reason}")
+			self.isBoundaryScrollPending = False
+		try:
+			gesture.send()
+		except Exception:
+			log.debugWarning("Unable to send WeChat review gesture through.", exc_info=True)
+
+	def _clearPendingReviewGestures(self, reason: str):
+		"""Clear queued review gestures and stop their drain timer."""
+		if self.pendingReviewDirections:
+			log.io(
+				"WeChatEnhancement: "
+				f"pending review gestures cleared, reason={reason}, "
+				f"count={len(self.pendingReviewDirections)}",
+			)
+		self.pendingReviewDirections = []
+		if self.pendingReviewDrainTimer and self.pendingReviewDrainTimer.IsRunning():
+			self.pendingReviewDrainTimer.Stop()
+		self.pendingReviewDrainTimer = None
+
+	def _queuePendingReviewGesture(self, direction: int):
+		"""Queue a review movement while a boundary scroll is loading."""
+		if len(self.pendingReviewDirections) >= self.MAX_PENDING_REVIEW_GESTURES:
+			self.pendingReviewDirections[-1] = direction
+			log.io(
+				"WeChatEnhancement: "
+				f"pending review gesture coalesced, direction={direction}, "
+				f"count={len(self.pendingReviewDirections)}",
+			)
+			return
+		self.pendingReviewDirections.append(direction)
+		log.io(
+			"WeChatEnhancement: "
+			f"pending review gesture queued, direction={direction}, "
+			f"count={len(self.pendingReviewDirections)}",
+		)
+
+	def _schedulePendingReviewDrain(self):
+		"""Schedule queued review gestures to run after a boundary load speaks."""
+		if not self.pendingReviewDirections:
+			return
+		if self.pendingReviewDrainTimer and self.pendingReviewDrainTimer.IsRunning():
+			return
+		self.pendingReviewDrainTimer = wx.CallLater(
+			self.PENDING_REVIEW_DRAIN_DELAY,
+			self._drainPendingReviewGestures,
+		)
+		log.io(
+			"WeChatEnhancement: "
+			f"pending review drain scheduled, delay={self.PENDING_REVIEW_DRAIN_DELAY}ms, "
+			f"count={len(self.pendingReviewDirections)}",
+		)
+
+	def _readReviewDirection(self, state: dict[str, Any], direction: int) -> bool:
+		"""Read one relative review movement, scrolling only at a queue boundary."""
+		if direction > 0 and state["currentIndex"] >= len(state["messages"]) - 1:
+			log.io("WeChatEnhancement: readReviewDirection at newest cached message")
+			return self._speakCurrentMessage(state)
+		if self._shouldScrollBeforeRelativeRead(state, direction):
+			self._scrollBoundaryAndRead(state, direction)
+			return False
+		return self._speakRelativeMessage(state, direction)
+
+	def _drainPendingReviewGestures(self):
+		"""Read queued review gestures in order after the boundary message is available."""
+		self.pendingReviewDrainTimer = None
+		if not self.pendingReviewDirections:
+			return
+		if self.isBoundaryScrollPending:
+			log.io("WeChatEnhancement: pending review drain deferred: boundary scroll pending")
+			return
+		if not self._isMessageInputFocus(logDetails=True):
+			self._clearPendingReviewGestures("focus left message input")
+			return
+
+		prefetchedState = None
+		if self.isPrefetchPending:
+			prefetchedState = self._finishMessagePrefetch("pendingReview")
+		state = prefetchedState or self._getActiveChatState(refresh=False)
+		if state is None:
+			self._clearPendingReviewGestures("no active chat state")
+			return
+
+		direction = self.pendingReviewDirections.pop(0)
+		log.io(
+			"WeChatEnhancement: "
+			f"pending review gesture draining, direction={direction}, "
+			f"remaining={len(self.pendingReviewDirections)}",
+		)
+		didSpeak = self._readReviewDirection(state, direction)
+		if self.isBoundaryScrollPending:
+			return
+		if not didSpeak:
+			self._clearPendingReviewGestures("queued read did not speak")
+			return
+		if self.pendingReviewDirections:
+			self._deferPendingReviewDrainUntilSpeechDone("pendingReview")
+		elif direction < 0:
+			self._deferMessagePrefetchUntilSpeechDone(state, direction, "pendingReview")
+
 	def _getActiveChatState(self, refresh: bool = True) -> dict[str, Any] | None:
 		"""Return the refreshed state for the active chat."""
 		if refresh:
@@ -1468,20 +1905,21 @@ class AppModule(appModuleHandler.AppModule):
 	def script_readPreviousMessage(self, gesture: Any):
 		"""Read the previous message from the active chat queue."""
 		log.io("WeChatEnhancement: script_readPreviousMessage")
-		if self.isBoundaryScrollPending:
-			log.io("WeChatEnhancement: script_readPreviousMessage ignored: boundary scroll pending")
+		if not self._isMessageInputFocus():
+			self._sendReviewGestureThrough(gesture, "focus is not message input")
 			return
+		if self.isBoundaryScrollPending:
+			self._queuePendingReviewGesture(-1)
+			return
+		self._clearPendingReviewGestures("manual read previous")
+		self._clearDeferredReviewWork("manual read previous")
 		prefetchedState = None
 		if self.isPrefetchPending:
 			prefetchedState = self._finishMessagePrefetch("readPrevious")
 		state = prefetchedState or self._getActiveChatState(refresh=not self.isPrefetchPending)
 		if state is None:
 			return
-		if self._shouldScrollBeforeRelativeRead(state, -1):
-			self._scrollBoundaryAndRead(state, -1)
-			return
-
-		self._speakRelativeMessage(state, -1)
+		self._readReviewDirection(state, -1)
 
 	@script(
 		# Translators: Description for the command that reads the next WeChat message.
@@ -1492,24 +1930,21 @@ class AppModule(appModuleHandler.AppModule):
 	def script_readNextMessage(self, gesture: Any):
 		"""Read the next message from the active chat queue."""
 		log.io("WeChatEnhancement: script_readNextMessage")
-		if self.isBoundaryScrollPending:
-			log.io("WeChatEnhancement: script_readNextMessage ignored: boundary scroll pending")
+		if not self._isMessageInputFocus():
+			self._sendReviewGestureThrough(gesture, "focus is not message input")
 			return
+		if self.isBoundaryScrollPending:
+			self._queuePendingReviewGesture(1)
+			return
+		self._clearPendingReviewGestures("manual read next")
+		self._clearDeferredReviewWork("manual read next")
 		prefetchedState = None
 		if self.isPrefetchPending:
 			prefetchedState = self._finishMessagePrefetch("readNext")
 		state = prefetchedState or self._getActiveChatState(refresh=not self.isPrefetchPending)
 		if state is None:
 			return
-		if state["currentIndex"] >= len(state["messages"]) - 1:
-			log.io("WeChatEnhancement: script_readNextMessage at newest cached message")
-			self._speakCurrentMessage(state)
-			return
-		if self._shouldScrollBeforeRelativeRead(state, 1):
-			self._scrollBoundaryAndRead(state, 1)
-			return
-
-		self._speakRelativeMessage(state, 1)
+		self._readReviewDirection(state, 1)
 
 	@script(
 		# Translators: Description for the command that reads the last WeChat message.
@@ -1520,6 +1955,17 @@ class AppModule(appModuleHandler.AppModule):
 	def script_readLastMessage(self, gesture: Any):
 		"""Read the newest message from the active chat queue."""
 		log.io("WeChatEnhancement: script_readLastMessage")
+		if not self._isMessageInputFocus():
+			self._sendReviewGestureThrough(gesture, "focus is not message input")
+			return
+		self._clearPendingReviewGestures("read last")
+		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
+			self.scrollLoadTimer.Stop()
+			self.scrollLoadTimer = None
+		if self.isBoundaryScrollPending:
+			log.io("WeChatEnhancement: boundary scroll cancelled, reason=read last")
+			self.isBoundaryScrollPending = False
+		self._clearDeferredReviewWork("read last")
 		if self.isPrefetchPending:
 			self._cancelMessagePrefetch("read last")
 		state = self._getActiveChatState()
@@ -1527,7 +1973,7 @@ class AppModule(appModuleHandler.AppModule):
 			return
 
 		state["currentIndex"] = len(state["messages"]) - 1
-		ui.message(state["messages"][state["currentIndex"]])
+		self._speakReviewMessage(state["messages"][state["currentIndex"]])
 
 	@script(
 		# Translators: Description for the command that changes new message notification mode.
