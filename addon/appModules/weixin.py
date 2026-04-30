@@ -37,13 +37,13 @@ class AppModule(appModuleHandler.AppModule):
 	MESSAGE_INPUT_UIA_ID = "chat_input_field"
 	MESSAGE_ITEM_UIA_ID = "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"
 	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
-	MAIN_TABBAR_UIA_ID = "main_tabbar"
 	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowIcon"
 	CONFIG_SECTION = "weixin"
 	CONFIG_KEY_NOTIFICATION_MODE = "notificationMode"
 	MAX_MESSAGE_QUEUE_SIZE = 200
 	MAX_SIMPLE_NEXT_TO_SEARCH = 80
 	SCROLL_LOAD_DELAY = 25
+	NOTIFICATION_SUPPRESSION_DELAY = 2000
 	MAX_BOUNDARY_SCROLL_ATTEMPTS = 4
 	KEYEVENTF_EXTENDEDKEY = 0x0001
 	KEYEVENTF_KEYUP = 0x0002
@@ -55,6 +55,12 @@ class AppModule(appModuleHandler.AppModule):
 	NO_MESSAGES_TEXT = _("No messages in the current chat.")
 
 	MODE_OFF, MODE_SOUND_ONLY, MODE_SOUND_AND_SPEECH = range(3)
+	QUEUE_UPDATE_UNCHANGED = "unchanged"
+	QUEUE_UPDATE_INITIAL = "initial"
+	QUEUE_UPDATE_APPEND = "append"
+	QUEUE_UPDATE_PREPEND = "prepend"
+	QUEUE_UPDATE_REPLACE = "replace"
+	QUEUE_UPDATE_IGNORED = "ignored"
 
 	confspec = {
 		CONFIG_KEY_NOTIFICATION_MODE: f"integer(min=0, max=2, default={MODE_OFF})",
@@ -65,11 +71,12 @@ class AppModule(appModuleHandler.AppModule):
 		"""Initialize notification and message review state."""
 		super().__init__(*args, **kwargs)
 		self.notificationMode = config.conf[self.CONFIG_SECTION][self.CONFIG_KEY_NOTIFICATION_MODE]
-		self.isUserActive = False
-		self.activityTimer = None
+		self.isNotificationSuppressed = False
+		self.notificationSuppressionTimer = None
+		self.lastNotifiedMessageInfo = None
 		self.reviewState = self._createReviewState()
 		self.activeMessageList = None
-		self.reviewQueueResetOnLastRefresh = False
+		self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
 
@@ -84,9 +91,9 @@ class AppModule(appModuleHandler.AppModule):
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.scrollLoadTimer = None
-		if self.activityTimer and self.activityTimer.IsRunning():
-			self.activityTimer.Stop()
-		self.activityTimer = None
+		if self.notificationSuppressionTimer and self.notificationSuppressionTimer.IsRunning():
+			self.notificationSuppressionTimer.Stop()
+		self.notificationSuppressionTimer = None
 		super().terminate()
 
 	def _getObjectText(self, obj: Any) -> str | None:
@@ -288,7 +295,6 @@ class AppModule(appModuleHandler.AppModule):
 		return {
 			"messages": [],
 			"currentIndex": -1,
-			"lastReadMessageInfo": None,
 			"visibleStart": None,
 			"visibleEnd": None,
 		}
@@ -314,54 +320,61 @@ class AppModule(appModuleHandler.AppModule):
 		self,
 		state: dict[str, Any],
 		visibleMessages: list[str],
-	) -> bool:
+	) -> str:
 		"""Merge visible messages into the temporary queue.
 
-		@return: True when the queue was reset to an unrelated visible window.
+		@return: A queue update kind describing how the queue changed.
 		"""
 		oldMessages = state["messages"]
 		if not oldMessages:
 			state["messages"] = visibleMessages
 			state["currentIndex"] = len(visibleMessages) - 1
 			self._trimReviewState(state)
-			return True
+			return self.QUEUE_UPDATE_INITIAL
 
 		oldIndex = state["currentIndex"]
 		wasAtLast = oldIndex >= len(oldMessages) - 1
 		newMessages = None
 		indexOffset = 0
-		didReplace = False
+		updateKind = self.QUEUE_UPDATE_UNCHANGED
 
 		visibleStart = self._findSubList(oldMessages, visibleMessages)
 		if visibleStart is not None:
-			return False
+			return self.QUEUE_UPDATE_UNCHANGED
 
 		oldStart = self._findSubList(visibleMessages, oldMessages)
 		if oldStart is not None:
 			newMessages = visibleMessages
 			indexOffset = oldStart
+			if len(visibleMessages) > len(oldMessages):
+				if oldStart == 0:
+					updateKind = self.QUEUE_UPDATE_APPEND
+				else:
+					updateKind = self.QUEUE_UPDATE_PREPEND
 		else:
 			appendOverlap = self._getSuffixPrefixOverlap(oldMessages, visibleMessages)
 			prependOverlap = self._getSuffixPrefixOverlap(visibleMessages, oldMessages)
 			if appendOverlap >= prependOverlap and appendOverlap > 0:
 				newMessages = oldMessages + visibleMessages[appendOverlap:]
+				updateKind = self.QUEUE_UPDATE_APPEND
 			elif prependOverlap > 0:
 				prependCount = len(visibleMessages) - prependOverlap
 				newMessages = visibleMessages[:prependCount] + oldMessages
 				indexOffset = prependCount
+				updateKind = self.QUEUE_UPDATE_PREPEND
 			else:
 				if self.isBoundaryScrollPending:
-					return False
+					return self.QUEUE_UPDATE_IGNORED
 				newMessages = visibleMessages
-				didReplace = True
+				updateKind = self.QUEUE_UPDATE_REPLACE
 
 		state["messages"] = newMessages
-		if wasAtLast or didReplace:
+		if wasAtLast or updateKind == self.QUEUE_UPDATE_REPLACE:
 			state["currentIndex"] = len(newMessages) - 1
 		else:
 			state["currentIndex"] = min(oldIndex + indexOffset, len(newMessages) - 1)
 		self._trimReviewState(state)
-		return didReplace
+		return updateKind
 
 	def _updateVisibleWindow(
 		self,
@@ -393,22 +406,21 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _setNotificationBaseline(
 		self,
-		state: dict[str, Any],
 		records: list[dict[str, Any]],
 	):
 		"""Mark the newest visible message as already seen."""
 		if not records:
 			return
 		lastRecord = records[-1]
-		state["lastReadMessageInfo"] = (lastRecord["info"], lastRecord["text"])
+		self.lastNotifiedMessageInfo = (lastRecord["info"], lastRecord["text"])
 
 	def refreshMessageQueue(
 		self,
 		messageList: Any | None = None,
 		setNotificationBaseline: bool = False,
-	) -> dict[str, Any] | None:
+	) -> dict[str, Any]:
 		"""Refresh the temporary queue for the current chat view."""
-		self.reviewQueueResetOnLastRefresh = False
+		self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 		if messageList is None:
 			messageList = self._findCurrentMessageList()
 		if messageList is None:
@@ -420,11 +432,11 @@ class AppModule(appModuleHandler.AppModule):
 
 		state = self.reviewState
 		visibleMessages = [record["text"] for record in records]
-		self.reviewQueueResetOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
+		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
 		self._updateVisibleWindow(state, records)
 		self.activeMessageList = messageList
 		if setNotificationBaseline:
-			self._setNotificationBaseline(state, records)
+			self._setNotificationBaseline(records)
 		return state
 
 	def _getObjectRect(self, obj: Any) -> tuple[int, int, int, int] | None:
@@ -563,7 +575,7 @@ class AppModule(appModuleHandler.AppModule):
 			if not self._isMessageInputFocus():
 				return
 			state = self.refreshMessageQueue(setNotificationBaseline=True)
-			if not state or not state["messages"]:
+			if not state["messages"]:
 				return
 
 			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, direction)
@@ -604,6 +616,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _scrollBoundaryAndRead(self, state: dict[str, Any], direction: int, attempt: int = 0):
 		"""Scroll beyond the visible boundary and read after WeChat updates the list."""
+		self._suppressNotificationsForUserAction()
 		messageList = self._findCurrentMessageList()
 		if messageList is None:
 			self.isBoundaryScrollPending = False
@@ -635,8 +648,8 @@ class AppModule(appModuleHandler.AppModule):
 		"""
 		Handle chat message list scrollbar changes.
 
-		The event is used both for new-message notifications and for silently
-		keeping the virtual message queue current.
+		The event updates the review queue and reports only tail-appended
+		messages as automatic new-message notifications.
 		"""
 		try:
 			isTargetScrollbar = (
@@ -651,10 +664,8 @@ class AppModule(appModuleHandler.AppModule):
 			return nextHandler()
 
 		messageList = obj.parent
-		state = self.refreshMessageQueue(messageList)
-		if state is None:
-			return nextHandler()
-		queueWasReset = self.reviewQueueResetOnLastRefresh
+		self.refreshMessageQueue(messageList)
+		queueUpdateKind = self.reviewQueueUpdateOnLastRefresh
 
 		try:
 			latestMessage = messageList.lastChild
@@ -665,15 +676,18 @@ class AppModule(appModuleHandler.AppModule):
 			return nextHandler()
 
 		currentMessageInfo = (latestRecord["info"], latestRecord["text"])
-		if currentMessageInfo == state.get("lastReadMessageInfo"):
+		if currentMessageInfo == self.lastNotifiedMessageInfo:
 			return nextHandler()
-		if queueWasReset:
-			state["lastReadMessageInfo"] = currentMessageInfo
+		if (
+			self._shouldSuppressNewMessageNotification()
+			or queueUpdateKind != self.QUEUE_UPDATE_APPEND
+		):
+			self.lastNotifiedMessageInfo = currentMessageInfo
 			return nextHandler()
 
-		if self.notificationMode != self.MODE_OFF and not self.isUserActive:
+		if self.notificationMode != self.MODE_OFF:
 			self.performNotification(latestMessage)
-		state["lastReadMessageInfo"] = currentMessageInfo
+		self.lastNotifiedMessageInfo = currentMessageInfo
 		nextHandler()
 
 	def event_gainFocus(self, obj: Any, nextHandler: Any):
@@ -683,9 +697,6 @@ class AppModule(appModuleHandler.AppModule):
 		Entering the message list activates the temporary review queue and marks
 		the current newest message as the notification baseline.
 		"""
-		if obj.role == controlTypes.Role.TOOLBAR and self._getObjectAutomationID(obj) == self.MAIN_TABBAR_UIA_ID:
-			wx.CallLater(0, lambda: speech.speakObject(obj.simpleFirstChild))
-
 		try:
 			isMessageItem = (
 				self._isMessageItem(obj)
@@ -696,7 +707,7 @@ class AppModule(appModuleHandler.AppModule):
 			isMessageItem = False
 
 		if isMessageItem:
-			self.notifyUserActivity()
+			self._suppressNotificationsForUserAction()
 			self.refreshMessageQueue(obj.parent, setNotificationBaseline=True)
 		elif self._isMessageList(obj):
 			self.refreshMessageQueue(obj, setNotificationBaseline=True)
@@ -704,17 +715,24 @@ class AppModule(appModuleHandler.AppModule):
 			self.refreshMessageQueue(setNotificationBaseline=True)
 		nextHandler()
 
-	def notifyUserActivity(self):
-		"""Mark the user as active and pause automatic reading briefly."""
-		self.isUserActive = True
-		if self.activityTimer and self.activityTimer.IsRunning():
-			self.activityTimer.Restart(2000)
+	def _suppressNotificationsForUserAction(self):
+		"""Temporarily suppress notifications caused by active message review."""
+		self.isNotificationSuppressed = True
+		if self.notificationSuppressionTimer and self.notificationSuppressionTimer.IsRunning():
+			self.notificationSuppressionTimer.Restart(self.NOTIFICATION_SUPPRESSION_DELAY)
 		else:
-			self.activityTimer = wx.CallLater(2000, self._clearUserActivityFlag)
+			self.notificationSuppressionTimer = wx.CallLater(
+				self.NOTIFICATION_SUPPRESSION_DELAY,
+				self._clearNotificationSuppression,
+			)
 
-	def _clearUserActivityFlag(self):
-		"""Clear the temporary user activity flag."""
-		self.isUserActive = False
+	def _clearNotificationSuppression(self):
+		"""Allow automatic new-message notifications again."""
+		self.isNotificationSuppressed = False
+
+	def _shouldSuppressNewMessageNotification(self) -> bool:
+		"""Return whether automatic new-message notification should be muted."""
+		return self.isNotificationSuppressed or self.isBoundaryScrollPending
 
 	def performNotification(self, messageObj: Any):
 		"""Play the configured notification for a new message."""
@@ -759,22 +777,12 @@ class AppModule(appModuleHandler.AppModule):
 			return False
 		return self._speakRelativeMessage(state, direction)
 
-	def _getCachedReviewState(self) -> dict[str, Any] | None:
-		"""Return the temporary review state without refreshing visible messages."""
-		state = self.reviewState
-		if state is None or not state["messages"]:
-			return None
-		return state
-
-	def _getActiveReviewState(self, refresh: bool = True) -> dict[str, Any] | None:
+	def _getActiveReviewState(self) -> dict[str, Any] | None:
 		"""Return the active temporary review state."""
-		if refresh:
-			state = self._getCachedReviewState()
-			if state is None:
-				state = self.refreshMessageQueue(setNotificationBaseline=True)
-		else:
-			state = self.reviewState
-		if state and state["messages"]:
+		state = self.reviewState
+		if not state["messages"]:
+			state = self.refreshMessageQueue(setNotificationBaseline=True)
+		if state["messages"]:
 			return state
 		ui.message(self.NO_MESSAGES_TEXT)
 		return None
@@ -790,6 +798,7 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		if self.isBoundaryScrollPending:
 			return
+		self._suppressNotificationsForUserAction()
 		state = self._getActiveReviewState()
 		if state is None:
 			return
@@ -826,6 +835,7 @@ class AppModule(appModuleHandler.AppModule):
 		if not self._isMessageInputFocus():
 			self._sendReviewGestureThrough(gesture)
 			return
+		self._suppressNotificationsForUserAction()
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 			self.scrollLoadTimer = None
@@ -854,4 +864,4 @@ class AppModule(appModuleHandler.AppModule):
 			self.MODE_SOUND_AND_SPEECH: _("Sound and speech"),
 		}
 		ui.message(modeMessages.get(self.notificationMode))
-		self.reviewState["lastReadMessageInfo"] = None
+		self.refreshMessageQueue(setNotificationBaseline=True)
