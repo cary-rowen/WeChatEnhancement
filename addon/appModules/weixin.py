@@ -38,8 +38,15 @@ class AppModule(appModuleHandler.AppModule):
 
 	MESSAGE_LIST_UIA_ID = "chat_message_list"
 	MESSAGE_INPUT_UIA_ID = "chat_input_field"
+	MESSAGE_ITEM_UIA_ID = "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"
+	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
+	CHAT_MESSAGE_PAGE_UIA_ID = "chat_message_page"
+	CHAT_SINGLE_WINDOW_UIA_ID_PREFIX = "ChatSingleWindow"
+	CHAT_TITLE_LEFT_CONTENT_UIA_ID = (
+		"content_view.top_content_view.title_h_view.left_v_view.left_content_v_view"
+	)
 	MAIN_TABBAR_UIA_ID = "main_tabbar"
-	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
+	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowIcon"
 	CONFIG_SECTION = "weixin"
 	CONFIG_KEY_NOTIFICATION_MODE = "notificationMode"
 	MAX_MESSAGE_QUEUE_SIZE = 200
@@ -77,7 +84,6 @@ class AppModule(appModuleHandler.AppModule):
 		self.chatStates: dict[Any, dict[str, Any]] = {}
 		self.activeChatKey = None
 		self.activeMessageList = None
-		self.nextFallbackChatID = 0
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
 		self.prefetchLoadTimer = None
@@ -141,6 +147,36 @@ class AppModule(appModuleHandler.AppModule):
 			return None
 		return text
 
+	def _getObjectAutomationID(self, obj: Any) -> str:
+		"""Return an object's AutomationId when it is available."""
+		try:
+			automationID = obj.UIAAutomationId
+		except Exception:
+			return ""
+		return automationID or ""
+
+	def _getObjectUIAClassName(self, obj: Any) -> str:
+		"""Return an object's UIA class name when it is available."""
+		try:
+			element = obj.UIAElement
+		except Exception:
+			return ""
+		for attrName in ("CachedClassName", "cachedClassName", "currentClassName"):
+			try:
+				className = getattr(element, attrName)
+			except Exception:
+				continue
+			if className:
+				return className
+		return ""
+
+	def _getObjectChildren(self, obj: Any) -> list[Any]:
+		"""Return an object's children without letting traversal fail."""
+		try:
+			return list(obj.children)
+		except Exception:
+			return []
+
 	def _getObjectLocation(self, obj: Any) -> tuple[int, int, int, int] | None:
 		"""Return an object's screen location."""
 		try:
@@ -170,37 +206,39 @@ class AppModule(appModuleHandler.AppModule):
 			return None
 		return (int(left), int(top), int(width), int(height))
 
+	def _isMessageItem(self, obj: Any) -> bool:
+		"""Return whether an object should be included in the message queue."""
+		try:
+			if obj.role != controlTypes.Role.LISTITEM:
+				return False
+		except Exception:
+			return False
+		return (
+			self._getObjectAutomationID(obj) == self.MESSAGE_ITEM_UIA_ID
+			or self._getObjectUIAClassName(obj) == self.MESSAGE_TIME_ITEM_UIA_CLASS
+		)
+
 	def _getMessageRecord(self, obj: Any) -> dict[str, Any] | None:
 		"""Return a stable record for a message object."""
+		if not self._isMessageItem(obj):
+			return None
+
 		text = self._getObjectText(obj)
 		if text is None:
 			return None
 
 		runtimeID = self._getObjectRuntimeID(obj)
-		if runtimeID is not None:
-			messageInfo = ("runtimeID", runtimeID)
-		else:
-			try:
-				location = obj.location
-			except Exception:
-				location = None
-			try:
-				location = tuple(location) if location is not None else None
-			except TypeError:
-				location = repr(location)
-			messageInfo = ("fallback", location, text)
+		if runtimeID is None:
+			return None
 
 		return {
-			"info": messageInfo,
+			"info": ("runtimeID", runtimeID),
 			"text": text,
 		}
 
 	def _isMessageList(self, obj: Any) -> bool:
 		"""Return whether an object is the WeChat chat message list."""
-		try:
-			return obj.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
-		except Exception:
-			return False
+		return self._getObjectAutomationID(obj) == self.MESSAGE_LIST_UIA_ID
 
 	def _getContainingMessageList(self, obj: Any) -> Any | None:
 		"""Return the chat message list containing an object."""
@@ -225,10 +263,7 @@ class AppModule(appModuleHandler.AppModule):
 			inspectedCount += 1
 			if self._isMessageList(obj):
 				return obj
-			try:
-				queue.extend(obj.children)
-			except Exception:
-				continue
+			queue.extend(self._getObjectChildren(obj))
 		return None
 
 	def _findCurrentMessageList(self) -> Any | None:
@@ -252,6 +287,37 @@ class AppModule(appModuleHandler.AppModule):
 
 		return None
 
+	def _findAncestorByAutomationID(self, obj: Any | None, automationID: str) -> Any | None:
+		"""Return the nearest ancestor with the given AutomationId."""
+		current = obj
+		while current is not None:
+			if self._getObjectAutomationID(current) == automationID:
+				return current
+			try:
+				current = current.parent
+			except Exception:
+				return None
+		return None
+
+	def _findDescendantByAutomationID(
+		self,
+		root: Any | None,
+		automationID: str,
+		maxObjects: int = 160,
+	) -> Any | None:
+		"""Return the first bounded descendant with the given AutomationId."""
+		if root is None:
+			return None
+		queue = deque([root])
+		inspectedCount = 0
+		while queue and inspectedCount < maxObjects:
+			obj = queue.popleft()
+			inspectedCount += 1
+			if self._getObjectAutomationID(obj) == automationID:
+				return obj
+			queue.extend(self._getObjectChildren(obj))
+		return None
+
 	def _getCachedUIAProperty(self, element: Any, propertyID: int) -> Any:
 		"""Return a cached UIA property value, ignoring unsupported values."""
 		try:
@@ -271,6 +337,11 @@ class AppModule(appModuleHandler.AppModule):
 		if controlType != UIA.UIA_ListItemControlTypeId:
 			return None
 
+		automationID = self._getCachedUIAProperty(element, UIA.UIA_AutomationIdPropertyId)
+		className = self._getCachedUIAProperty(element, UIA.UIA_ClassNamePropertyId)
+		if automationID != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS:
+			return None
+
 		text = self._getCachedUIAProperty(element, UIA.UIA_NamePropertyId)
 		if not text or speech.isBlank(text):
 			return None
@@ -278,9 +349,9 @@ class AppModule(appModuleHandler.AppModule):
 		location = self._getUIARectLocation(
 			self._getCachedUIAProperty(element, UIA.UIA_BoundingRectanglePropertyId),
 		)
-		automationID = self._getCachedUIAProperty(element, UIA.UIA_AutomationIdPropertyId)
+		itemID = automationID or className
 		return {
-			"info": ("uia", automationID, location, text),
+			"info": ("uia", itemID, location, text),
 			"text": text,
 		}
 
@@ -296,7 +367,9 @@ class AppModule(appModuleHandler.AppModule):
 
 		try:
 			childrenCacheRequest = UIAHandler.handler.baseCacheRequest.clone()
+			childrenCacheRequest.addProperty(UIA.UIA_AutomationIdPropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_BoundingRectanglePropertyId)
+			childrenCacheRequest.addProperty(UIA.UIA_ClassNamePropertyId)
 			childrenCacheRequest.TreeScope = UIAHandler.TreeScope_Children
 			cachedChildren = messageListElement.buildUpdatedCache(
 				childrenCacheRequest,
@@ -327,17 +400,7 @@ class AppModule(appModuleHandler.AppModule):
 			return records
 
 		records = []
-		try:
-			children = messageList.children
-		except Exception:
-			children = []
-
-		for child in children:
-			try:
-				if child.role != controlTypes.Role.LISTITEM:
-					continue
-			except Exception:
-				continue
+		for child in self._getObjectChildren(messageList):
 			record = self._getMessageRecord(child)
 			if record is not None:
 				records.append(record)
@@ -362,57 +425,77 @@ class AppModule(appModuleHandler.AppModule):
 			"visibleEnd": None,
 		}
 
-	def _hasReliableOverlap(self, left: list[str], right: list[str]) -> bool:
-		"""Return whether two message windows likely belong to the same chat."""
-		if not left or not right:
-			return False
-		if self._findSubList(left, right) is not None:
-			return True
-		if self._findSubList(right, left) is not None:
-			return True
-		commonMessages = set(left).intersection(right)
-		return len(commonMessages) >= 2
-
 	def _isScrollMergeProtected(self) -> bool:
 		"""Return whether queue refreshes must stay attached to the active chat."""
 		return self.isBoundaryScrollPending or self.isPrefetchRefresh
 
-	def _getFallbackChatKey(
-		self,
-		listRuntimeID: tuple[Any, ...] | None,
-		messages: list[str],
-	) -> Any:
-		"""Return a generated chat key when WeChat does not expose the selected conversation."""
-		if self._isScrollMergeProtected() and self.activeChatKey is not None:
-			return self.activeChatKey
+	def _getIndependentChatWindowKey(self, obj: Any | None = None) -> Any | None:
+		"""Return a stable key for an independent WeChat chat window."""
+		current = obj
+		while current is not None:
+			automationID = self._getObjectAutomationID(current)
+			if automationID.startswith(self.CHAT_SINGLE_WINDOW_UIA_ID_PREFIX):
+				return ("chatSingleWindow", automationID)
+			try:
+				current = current.parent
+			except Exception:
+				break
 
-		activeState = self.chatStates.get(self.activeChatKey)
-		if activeState and self._hasReliableOverlap(activeState["messages"], messages):
-			return self.activeChatKey
+		try:
+			foreground = api.getForegroundObject()
+		except Exception:
+			return None
+		automationID = self._getObjectAutomationID(foreground)
+		if automationID and automationID.startswith(self.CHAT_SINGLE_WINDOW_UIA_ID_PREFIX):
+			return ("chatSingleWindow", automationID)
+		return None
 
-		for chatKey, state in self.chatStates.items():
-			if self._hasReliableOverlap(state["messages"], messages):
-				return chatKey
+	def _getChatTitleText(self, titleRoot: Any | None) -> str | None:
+		"""Return the selected chat title text from the confirmed title node."""
+		if titleRoot is None:
+			return None
 
-		self.nextFallbackChatID += 1
-		return ("fallbackChat", self.nextFallbackChatID, listRuntimeID)
+		queue = deque([titleRoot])
+		inspectedCount = 0
+		while queue and inspectedCount < 80:
+			obj = queue.popleft()
+			inspectedCount += 1
+			automationID = self._getObjectAutomationID(obj)
+			if "current_chat" in automationID:
+				return self._getObjectText(obj)
+			queue.extend(self._getObjectChildren(obj))
+		return None
+
+	def _getTiledChatTitleKey(self, messageList: Any | None) -> Any | None:
+		"""Return a key from the selected chat title in the tiled main window."""
+		if messageList is None:
+			return None
+
+		chatMessagePage = self._findAncestorByAutomationID(messageList, self.CHAT_MESSAGE_PAGE_UIA_ID)
+		titleContent = self._findDescendantByAutomationID(
+			chatMessagePage,
+			self.CHAT_TITLE_LEFT_CONTENT_UIA_ID,
+		)
+		titleText = self._getChatTitleText(titleContent)
+		if titleText is None:
+			return None
+		return ("tiledChatTitle", titleText)
 
 	def _getChatState(
 		self,
 		messageList: Any,
-		records: list[dict[str, Any]],
-	) -> tuple[Any, dict[str, Any]]:
+	) -> tuple[Any, dict[str, Any]] | None:
 		"""Return the state belonging to the current chat."""
-		messages = [record["text"] for record in records]
-		listRuntimeID = self._getObjectRuntimeID(messageList)
 		activeState = self.chatStates.get(self.activeChatKey)
 		if self._isScrollMergeProtected() and activeState is not None:
 			return self.activeChatKey, activeState
 
-		if activeState and self._hasReliableOverlap(activeState["messages"], messages):
-			return self.activeChatKey, activeState
-
-		chatKey = self._getFallbackChatKey(listRuntimeID, messages)
+		chatKey = (
+			self._getIndependentChatWindowKey(messageList)
+			or self._getTiledChatTitleKey(messageList)
+		)
+		if chatKey is None:
+			return None
 
 		state = self.chatStates.get(chatKey)
 		if state is None:
@@ -540,7 +623,10 @@ class AppModule(appModuleHandler.AppModule):
 		if not records:
 			return self.chatStates.get(self.activeChatKey)
 
-		chatKey, state = self._getChatState(messageList, records)
+		chatState = self._getChatState(messageList)
+		if chatState is None:
+			return None
+		chatKey, state = chatState
 		visibleMessages = [record["text"] for record in records]
 		self._mergeVisibleMessages(state, visibleMessages)
 		self._updateVisibleWindow(state, records)
@@ -1125,14 +1211,14 @@ class AppModule(appModuleHandler.AppModule):
 		Entering the message list activates the matching chat queue and marks
 		the current newest message as the notification baseline.
 		"""
-		if obj.role == controlTypes.Role.TOOLBAR and obj.UIAAutomationId == self.MAIN_TABBAR_UIA_ID:
+		if obj.role == controlTypes.Role.TOOLBAR and self._getObjectAutomationID(obj) == self.MAIN_TABBAR_UIA_ID:
 			wx.CallLater(0, lambda: speech.speakObject(obj.simpleFirstChild))
 
 		try:
 			isMessageItem = (
-				obj.role == controlTypes.Role.LISTITEM
+				self._isMessageItem(obj)
 				and obj.parent
-				and obj.parent.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
+				and self._isMessageList(obj.parent)
 			)
 		except Exception:
 			isMessageItem = False
