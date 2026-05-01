@@ -648,7 +648,7 @@ class AppModule(appModuleHandler.AppModule):
 		# Translators: Description for the command that reads the previous WeChat message.
 		description=_("Reads the previous message in the current WeChat chat"),
 		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+upArrow",
+		gesture="kb:alt+Control+upArrow",
 	)
 	def script_readPreviousMessage(self, gesture: inputCore.InputGesture) -> None:
 		self._handleRelativeReviewGesture(gesture, -1)
@@ -657,7 +657,7 @@ class AppModule(appModuleHandler.AppModule):
 		# Translators: Description for the command that reads the next WeChat message.
 		description=_("Reads the next message in the current WeChat chat"),
 		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+downArrow",
+		gesture="kb:alt+Control+downArrow",
 	)
 	def script_readNextMessage(self, gesture: inputCore.InputGesture) -> None:
 		self._handleRelativeReviewGesture(gesture, 1)
@@ -666,7 +666,7 @@ class AppModule(appModuleHandler.AppModule):
 		# Translators: Description for the command that reads the first WeChat message.
 		description=_("Reads the first message in the current WeChat chat"),
 		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+home",
+		gesture="kb:alt+Control+home",
 	)
 	def script_readFirstMessage(self, gesture: inputCore.InputGesture) -> None:
 		self._readIndexedReviewMessage(gesture, 0)
@@ -675,7 +675,7 @@ class AppModule(appModuleHandler.AppModule):
 		# Translators: Description for the command that reads the last WeChat message.
 		description=_("Reads the last message in the current WeChat chat"),
 		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+end",
+		gesture="kb:alt+Control+end",
 	)
 	def script_readLastMessage(self, gesture: inputCore.InputGesture) -> None:
 		self._readIndexedReviewMessage(gesture, -1)
