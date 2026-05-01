@@ -561,8 +561,13 @@ class AppModule(appModuleHandler.AppModule):
 		if state is None:
 			return
 		if index < 0:
-			if state.currentIndex >= len(state.messages) - 1:
-				state = self.refreshMessageQueue(setNotificationBaseline=True)
+			oldMessages = list(state.messages)
+			oldIndex = state.currentIndex
+			state = self.refreshMessageQueue(setNotificationBaseline=True)
+			if self.reviewQueueUpdateOnLastRefresh == self.QUEUE_UPDATE_REPLACE and oldMessages:
+				state.messages = oldMessages
+				state.currentIndex = oldIndex
+				self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 			index = len(state.messages) + index
 		self._speakMessageAtIndex(state, index)
 
