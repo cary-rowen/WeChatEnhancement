@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from os.path import dirname, join
-from typing import Any
+from typing import Any, NamedTuple
 
 import addonHandler
 import api
@@ -28,6 +29,21 @@ from nvwave import playWaveFile
 from scriptHandler import script
 
 addonHandler.initTranslation()
+
+
+class MessageRecord(NamedTuple):
+	"""Accessible text and identity for a visible WeChat message."""
+
+	info: tuple[Any, ...]
+	text: str
+
+
+@dataclass
+class ReviewState:
+	"""Temporary message review queue state."""
+
+	messages: list[str]
+	currentIndex: int = -1
 
 
 class AppModule(appModuleHandler.AppModule):
@@ -68,13 +84,12 @@ class AppModule(appModuleHandler.AppModule):
 	config.conf.spec[CONFIG_SECTION] = confspec
 
 	def __init__(self, *args: Any, **kwargs: Any):
-		"""Initialize notification and message review state."""
 		super().__init__(*args, **kwargs)
 		self.notificationMode = config.conf[self.CONFIG_SECTION][self.CONFIG_KEY_NOTIFICATION_MODE]
 		self.isNotificationSuppressed = False
 		self.notificationSuppressionTimer = None
 		self.lastNotifiedMessageInfo = None
-		self.reviewState = self._createReviewState()
+		self.reviewState = ReviewState(messages=[])
 		self.activeMessageList = None
 		self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 		self.scrollLoadTimer = None
@@ -87,7 +102,6 @@ class AppModule(appModuleHandler.AppModule):
 		)
 
 	def terminate(self):
-		"""Stop pending timers before unloading the app module."""
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.scrollLoadTimer = None
@@ -96,97 +110,7 @@ class AppModule(appModuleHandler.AppModule):
 		self.notificationSuppressionTimer = None
 		super().terminate()
 
-	def _getObjectText(self, obj: Any) -> str | None:
-		"""Return useful accessible text for an object."""
-		try:
-			text = obj.name
-		except Exception:
-			return None
-		if not text or speech.isBlank(text):
-			return None
-		return text
-
-	def _getObjectAutomationID(self, obj: Any) -> str:
-		"""Return an object's AutomationId when it is available."""
-		try:
-			automationID = obj.UIAAutomationId
-		except Exception:
-			return ""
-		return automationID or ""
-
-	def _getObjectUIAClassName(self, obj: Any) -> str:
-		"""Return an object's UIA class name when it is available."""
-		try:
-			className = obj.UIAElement.CachedClassName
-		except Exception:
-			return ""
-		return className or ""
-
-	def _getObjectLocation(self, obj: Any) -> tuple[int, int, int, int] | None:
-		"""Return an object's screen location."""
-		try:
-			location = obj.location
-		except Exception:
-			return None
-
-		try:
-			left, top, width, height = location
-		except Exception:
-			try:
-				left = location.left
-				top = location.top
-				width = location.width
-				height = location.height
-			except Exception:
-				return None
-		return (int(left), int(top), int(width), int(height))
-
-	def _getUIARectLocation(self, rect: Any) -> tuple[int, int, int, int] | None:
-		"""Return a UIA bounding rectangle as an integer location tuple."""
-		if not rect:
-			return None
-		try:
-			left, top, width, height = rect
-		except Exception:
-			return None
-		return (int(left), int(top), int(width), int(height))
-
-	def _isMessageItem(self, obj: Any) -> bool:
-		"""Return whether an object should be included in the message queue."""
-		try:
-			if obj.role != controlTypes.Role.LISTITEM:
-				return False
-		except Exception:
-			return False
-		return (
-			self._getObjectAutomationID(obj) == self.MESSAGE_ITEM_UIA_ID
-			or self._getObjectUIAClassName(obj) == self.MESSAGE_TIME_ITEM_UIA_CLASS
-		)
-
-	def _getMessageRecord(self, obj: Any) -> dict[str, Any] | None:
-		"""Return a stable record for a message object."""
-		if not self._isMessageItem(obj):
-			return None
-
-		text = self._getObjectText(obj)
-		if text is None:
-			return None
-
-		automationID = self._getObjectAutomationID(obj)
-		className = self._getObjectUIAClassName(obj)
-		itemID = automationID or className
-
-		return {
-			"info": ("uia", itemID, self._getObjectLocation(obj), text),
-			"text": text,
-		}
-
-	def _isMessageList(self, obj: Any) -> bool:
-		"""Return whether an object is the WeChat chat message list."""
-		return self._getObjectAutomationID(obj) == self.MESSAGE_LIST_UIA_ID
-
 	def _findMessageListAfterInput(self, inputObj: Any) -> Any | None:
-		"""Find the chat message list by walking forward from the input field."""
 		obj = inputObj
 		for _index in range(self.MAX_SIMPLE_NEXT_TO_SEARCH):
 			try:
@@ -195,74 +119,62 @@ class AppModule(appModuleHandler.AppModule):
 				return None
 			if obj is None:
 				return None
-			if self._isMessageList(obj):
+			if obj.UIAAutomationId == self.MESSAGE_LIST_UIA_ID:
 				return obj
 		return None
 
 	def _findCurrentMessageList(self) -> Any | None:
-		"""Return the current message list for input-field review."""
-		try:
-			focus = api.getFocusObject()
-		except Exception:
-			focus = None
-
-		if focus is not None and self._isMessageInputObject(focus):
+		focus = api.getFocusObject()
+		if focus is not None and focus.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID:
 			messageList = self._findMessageListAfterInput(focus)
 			if messageList is not None:
 				return messageList
-
-		if self.activeMessageList is not None and self._isMessageList(self.activeMessageList):
+		if (
+			self.activeMessageList is not None
+			and self.activeMessageList.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
+		):
 			return self.activeMessageList
-
 		return None
 
-	def _getCachedUIAProperty(self, element: Any, propertyID: int) -> Any:
-		"""Return a cached UIA property value, ignoring unsupported values."""
+	def _getUIAMessageRecord(self, element: Any) -> MessageRecord | None:
 		try:
-			value = element.getCachedPropertyValue(propertyID)
+			controlType = element.getCachedPropertyValue(UIA.UIA_ControlTypePropertyId)
+			automationID = element.getCachedPropertyValue(UIA.UIA_AutomationIdPropertyId)
+			className = element.getCachedPropertyValue(UIA.UIA_ClassNamePropertyId)
+			text = element.getCachedPropertyValue(UIA.UIA_NamePropertyId)
+			boundingRectangle = element.getCachedPropertyValue(UIA.UIA_BoundingRectanglePropertyId)
 		except Exception:
 			return None
-		try:
-			if value == UIAHandler.handler.reservedNotSupportedValue:
-				return None
-		except Exception:
-			pass
-		return value
-
-	def _getUIAMessageRecord(self, element: Any) -> dict[str, Any] | None:
-		"""Return a message record from a cached UIA element."""
-		controlType = self._getCachedUIAProperty(element, UIA.UIA_ControlTypePropertyId)
+		notSupportedValue = UIAHandler.handler.reservedNotSupportedValue
+		if controlType == notSupportedValue:
+			return None
 		if controlType != UIA.UIA_ListItemControlTypeId:
 			return None
-
-		automationID = self._getCachedUIAProperty(element, UIA.UIA_AutomationIdPropertyId)
-		className = self._getCachedUIAProperty(element, UIA.UIA_ClassNamePropertyId)
+		if automationID == notSupportedValue:
+			automationID = None
+		if className == notSupportedValue:
+			className = None
 		if automationID != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS:
 			return None
-
-		text = self._getCachedUIAProperty(element, UIA.UIA_NamePropertyId)
+		if text == notSupportedValue:
+			text = None
 		if not text or speech.isBlank(text):
 			return None
-
-		location = self._getUIARectLocation(
-			self._getCachedUIAProperty(element, UIA.UIA_BoundingRectanglePropertyId),
-		)
+		if boundingRectangle == notSupportedValue or not boundingRectangle:
+			location = None
+		else:
+			location = tuple(int(value) for value in boundingRectangle)
 		itemID = automationID or className
-		return {
-			"info": ("uia", itemID, location, text),
-			"text": text,
-		}
+		return MessageRecord(
+			info=("uia", itemID, location, text),
+			text=text,
+		)
 
 	def _collectVisibleMessageRecords(
 		self,
 		messageList: Any,
-	) -> list[dict[str, Any]]:
-		"""Collect visible message records directly from cached UIA children."""
-		try:
-			messageListElement = messageList.UIAElement
-		except Exception:
-			return []
-
+	) -> list[MessageRecord]:
+		messageListElement = messageList.UIAElement
 		try:
 			childrenCacheRequest = UIAHandler.handler.baseCacheRequest.clone()
 			childrenCacheRequest.addProperty(UIA.UIA_ControlTypePropertyId)
@@ -276,29 +188,16 @@ class AppModule(appModuleHandler.AppModule):
 			).getCachedChildren()
 		except Exception:
 			return []
-
 		if not cachedChildren:
 			return []
-
 		records = []
 		for index in range(cachedChildren.length):
-			try:
-				record = self._getUIAMessageRecord(cachedChildren.getElement(index))
-			except Exception:
-				record = None
+			record = self._getUIAMessageRecord(cachedChildren.getElement(index))
 			if record is not None:
 				records.append(record)
 		return records
 
-	def _createReviewState(self) -> dict[str, Any]:
-		"""Create temporary message review state."""
-		return {
-			"messages": [],
-			"currentIndex": -1,
-		}
-
 	def _findSubList(self, source: list[str], target: list[str]) -> int | None:
-		"""Return the start index of a contiguous target list inside source."""
 		if not target or len(target) > len(source):
 			return None
 		for index in range(len(source) - len(target) + 1):
@@ -307,7 +206,6 @@ class AppModule(appModuleHandler.AppModule):
 		return None
 
 	def _getSuffixPrefixOverlap(self, left: list[str], right: list[str]) -> int:
-		"""Return the largest overlap between left's suffix and right's prefix."""
 		maxOverlap = min(len(left), len(right))
 		for count in range(maxOverlap, 0, -1):
 			if left[-count:] == right[:count]:
@@ -316,21 +214,21 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _mergeVisibleMessages(
 		self,
-		state: dict[str, Any],
+		state: ReviewState,
 		visibleMessages: list[str],
 	) -> str:
 		"""Merge visible messages into the temporary queue.
 
 		@return: A queue update kind describing how the queue changed.
 		"""
-		oldMessages = state["messages"]
+		oldMessages = state.messages
 		if not oldMessages:
-			state["messages"] = visibleMessages
-			state["currentIndex"] = len(visibleMessages) - 1
+			state.messages = visibleMessages
+			state.currentIndex = len(visibleMessages) - 1
 			self._trimReviewState(state)
 			return self.QUEUE_UPDATE_INITIAL
 
-		oldIndex = state["currentIndex"]
+		oldIndex = state.currentIndex
 		wasAtLast = oldIndex >= len(oldMessages) - 1
 		newMessages = None
 		indexOffset = 0
@@ -366,83 +264,53 @@ class AppModule(appModuleHandler.AppModule):
 				newMessages = visibleMessages
 				updateKind = self.QUEUE_UPDATE_REPLACE
 
-		state["messages"] = newMessages
+		state.messages = newMessages
 		if wasAtLast or updateKind == self.QUEUE_UPDATE_REPLACE:
-			state["currentIndex"] = len(newMessages) - 1
+			state.currentIndex = len(newMessages) - 1
 		else:
-			state["currentIndex"] = min(oldIndex + indexOffset, len(newMessages) - 1)
+			state.currentIndex = min(oldIndex + indexOffset, len(newMessages) - 1)
 		self._trimReviewState(state)
 		return updateKind
 
-	def _trimReviewState(self, state: dict[str, Any]):
-		"""Keep the temporary review queue within the configured maximum size."""
-		overflow = len(state["messages"]) - self.MAX_MESSAGE_QUEUE_SIZE
+	def _trimReviewState(self, state: ReviewState):
+		overflow = len(state.messages) - self.MAX_MESSAGE_QUEUE_SIZE
 		if overflow <= 0:
 			return
-		del state["messages"][:overflow]
-		state["currentIndex"] = max(0, state["currentIndex"] - overflow)
-
-	def _setNotificationBaseline(
-		self,
-		records: list[dict[str, Any]],
-	):
-		"""Mark the newest visible message as already seen."""
-		if not records:
-			return
-		lastRecord = records[-1]
-		self.lastNotifiedMessageInfo = (lastRecord["info"], lastRecord["text"])
+		del state.messages[:overflow]
+		state.currentIndex = max(0, state.currentIndex - overflow)
 
 	def refreshMessageQueue(
 		self,
 		messageList: Any | None = None,
 		setNotificationBaseline: bool = False,
-	) -> dict[str, Any]:
-		"""Refresh the temporary queue for the current chat view."""
+	) -> ReviewState:
 		self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 		if messageList is None:
 			messageList = self._findCurrentMessageList()
 		if messageList is None:
 			return self.reviewState
-
 		records = self._collectVisibleMessageRecords(messageList)
 		if not records:
 			return self.reviewState
-
 		state = self.reviewState
-		visibleMessages = [record["text"] for record in records]
+		visibleMessages = [record.text for record in records]
 		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
 		self.activeMessageList = messageList
 		if setNotificationBaseline:
-			self._setNotificationBaseline(records)
+			lastRecord = records[-1]
+			self.lastNotifiedMessageInfo = (lastRecord.info, lastRecord.text)
 		return state
 
-	def _getObjectRect(self, obj: Any) -> tuple[int, int, int, int] | None:
-		"""Return an object's screen rectangle."""
-		rect = self._getObjectLocation(obj)
-		if rect is None:
-			return None
-		_left, _top, width, height = rect
+	def _getMouseScrollPoint(self, messageList: Any) -> tuple[int, int] | None:
+		left, top, width, height = messageList.location
 		if width <= 0 or height <= 0:
 			return None
-		return rect
-
-	def _getMouseScrollPoint(self, messageList: Any) -> tuple[int, int] | None:
-		"""Return the center point inside the message list for wheel scrolling."""
-		rect = self._getObjectRect(messageList)
-		if rect is None:
-			return None
-		left, top, width, height = rect
 		return int(left + width / 2), int(top + height / 2)
 
 	def _isKeyDown(self, vkCode: int) -> bool:
-		"""Return whether a virtual key is currently down."""
-		try:
-			return bool(winUser.getAsyncKeyState(vkCode) & 32768)
-		except Exception:
-			return False
+		return bool(winUser.getAsyncKeyState(vkCode) & 32768)
 
 	def _getPressedAltKeys(self) -> list[tuple[int, int]]:
-		"""Return pressed Alt keys and the flags needed to restore them."""
 		pressedKeys = []
 		altKeyFlags = (
 			(winUser.VK_LMENU, 0),
@@ -456,7 +324,6 @@ class AppModule(appModuleHandler.AppModule):
 		return pressedKeys
 
 	def _setSyntheticAltKeysUp(self, pressedKeys: list[tuple[int, int]], isKeyUp: bool):
-		"""Send synthetic Alt key-up or key-down events for wheel scrolling."""
 		keyUpFlag = self.KEYEVENTF_KEYUP if isKeyUp else 0
 		for vkCode, flags in pressedKeys:
 			winUser.keybd_event(vkCode, 0, flags | keyUpFlag, 0)
@@ -466,7 +333,6 @@ class AppModule(appModuleHandler.AppModule):
 		point = self._getMouseScrollPoint(messageList)
 		if point is None:
 			return False
-
 		oldX, oldY = winUser.getCursorPos()
 		pressedAltKeys = self._getPressedAltKeys()
 		try:
@@ -489,53 +355,25 @@ class AppModule(appModuleHandler.AppModule):
 				pass
 		return True
 
-	def _speakReviewMessage(self, text: str):
-		"""Speak a review message."""
-		ui.message(text)
-
-	def _speakRelativeMessage(self, state: dict[str, Any], direction: int) -> bool:
-		"""Speak a message relative to the current review cursor."""
-		nextIndex = state["currentIndex"] + direction
-		if nextIndex < 0 or nextIndex >= len(state["messages"]):
+	def _speakMessageAtIndex(self, state: ReviewState, index: int) -> bool:
+		if index < 0 or index >= len(state.messages):
 			return False
-		state["currentIndex"] = nextIndex
-		self._speakReviewMessage(state["messages"][nextIndex])
+		state.currentIndex = index
+		ui.message(state.messages[index])
 		return True
-
-	def _speakMessageAtIndex(self, state: dict[str, Any], index: int) -> bool:
-		"""Speak a message at an exact queue index."""
-		if index < 0 or index >= len(state["messages"]):
-			return False
-		state["currentIndex"] = index
-		self._speakReviewMessage(state["messages"][index])
-		return True
-
-	def _speakCurrentMessage(self, state: dict[str, Any]) -> bool:
-		"""Speak the current review message without moving the review cursor."""
-		currentIndex = state["currentIndex"]
-		if currentIndex < 0 or currentIndex >= len(state["messages"]):
-			return False
-		self._speakReviewMessage(state["messages"][currentIndex])
-		return True
-
-	def _shouldScrollBeforeRelativeRead(self, state: dict[str, Any], direction: int) -> bool:
-		"""Return whether the next review step should first move the visible list."""
-		nextIndex = state["currentIndex"] + direction
-		return nextIndex < 0 or nextIndex >= len(state["messages"])
 
 	def _getBoundaryTargetIndex(
 		self,
-		state: dict[str, Any],
+		state: ReviewState,
 		oldMessages: list[str],
 		direction: int,
 	) -> int | None:
-		"""Return the exact queue index requested after a boundary scroll."""
-		oldMessagesStart = self._findSubList(state["messages"], oldMessages)
+		oldMessagesStart = self._findSubList(state.messages, oldMessages)
 		if oldMessagesStart is None:
 			return None
 		if direction < 0 and oldMessagesStart > 0:
 			return oldMessagesStart - 1
-		if direction > 0 and oldMessagesStart + len(oldMessages) < len(state["messages"]):
+		if direction > 0 and oldMessagesStart + len(oldMessages) < len(state.messages):
 			return oldMessagesStart + len(oldMessages)
 		return None
 
@@ -552,7 +390,7 @@ class AppModule(appModuleHandler.AppModule):
 			if not self._isMessageInputFocus():
 				return
 			state = self.refreshMessageQueue(setNotificationBaseline=True)
-			if not state["messages"]:
+			if not state.messages:
 				return
 
 			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, direction)
@@ -564,26 +402,22 @@ class AppModule(appModuleHandler.AppModule):
 				self._scrollBoundaryAndRead(state, direction, attempt=nextAttempt)
 				return
 
-			oldMessagesStart = self._findSubList(state["messages"], oldMessages)
+			oldMessagesStart = self._findSubList(state.messages, oldMessages)
 			if oldMessagesStart is not None:
-				state["currentIndex"] = oldMessagesStart + oldIndex
+				state.currentIndex = oldMessagesStart + oldIndex
 			return
 
 		finally:
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
 
-	def _getScrollWheelUnitsForAttempt(self, attempt: int) -> int:
-		"""Return the number of wheel detents to send for a boundary retry."""
-		if attempt >= 2:
-			return 8
-		if attempt >= 1:
-			return 6
-		return 4
-
 	def _performScrollAttempt(self, messageList: Any, direction: int, attempt: int) -> bool:
-		"""Perform one mouse wheel scroll attempt."""
-		wheelUnits = self._getScrollWheelUnitsForAttempt(attempt)
+		if attempt >= 2:
+			wheelUnits = 8
+		elif attempt >= 1:
+			wheelUnits = 6
+		else:
+			wheelUnits = 4
 		scrollSteps = winUser.WHEEL_DELTA * wheelUnits
 		if direction > 0:
 			scrollSteps = -scrollSteps
@@ -591,7 +425,7 @@ class AppModule(appModuleHandler.AppModule):
 			return self._scrollMessageList(messageList, scrollSteps)
 		return False
 
-	def _scrollBoundaryAndRead(self, state: dict[str, Any], direction: int, attempt: int = 0):
+	def _scrollBoundaryAndRead(self, state: ReviewState, direction: int, attempt: int = 0):
 		"""Scroll beyond the visible boundary and read after WeChat updates the list."""
 		self._suppressNotificationsForUserAction()
 		messageList = self._findCurrentMessageList()
@@ -599,8 +433,8 @@ class AppModule(appModuleHandler.AppModule):
 			self.isBoundaryScrollPending = False
 			return
 
-		oldMessages = list(state["messages"])
-		oldIndex = state["currentIndex"]
+		oldMessages = list(state.messages)
+		oldIndex = state.currentIndex
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
 		self.isBoundaryScrollPending = True
@@ -628,43 +462,45 @@ class AppModule(appModuleHandler.AppModule):
 		The event updates the review queue and reports only tail-appended
 		messages as automatic new-message notifications.
 		"""
-		try:
-			isTargetScrollbar = (
-				obj.role == controlTypes.Role.SCROLLBAR
-				and obj.parent
-				and obj.parent.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
-			)
-		except Exception:
-			return nextHandler()
-
-		if not isTargetScrollbar:
+		if (
+			obj.role != controlTypes.Role.SCROLLBAR
+			or not obj.parent
+			or obj.parent.UIAAutomationId != self.MESSAGE_LIST_UIA_ID
+		):
 			return nextHandler()
 
 		messageList = obj.parent
 		self.refreshMessageQueue(messageList)
 		queueUpdateKind = self.reviewQueueUpdateOnLastRefresh
 
-		try:
-			latestMessage = messageList.lastChild
-			latestRecord = self._getMessageRecord(latestMessage)
-		except Exception:
-			latestRecord = None
-		if latestRecord is None:
-			return nextHandler()
-
-		currentMessageInfo = (latestRecord["info"], latestRecord["text"])
-		if currentMessageInfo == self.lastNotifiedMessageInfo:
-			return nextHandler()
+		latestMessage = messageList.lastChild
+		automationID = latestMessage.UIAAutomationId
+		className = latestMessage.UIAElement.CachedClassName
 		if (
-			self._shouldSuppressNewMessageNotification()
-			or queueUpdateKind != self.QUEUE_UPDATE_APPEND
+			latestMessage.role != controlTypes.Role.LISTITEM
+			or (
+				automationID != self.MESSAGE_ITEM_UIA_ID
+				and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
+			)
 		):
-			self.lastNotifiedMessageInfo = currentMessageInfo
+			return nextHandler()
+		text = latestMessage.name
+		if not text or speech.isBlank(text):
+			return nextHandler()
+		messageInfo = (
+			("uia", automationID or className, tuple(latestMessage.location), text),
+			text,
+		)
+		if messageInfo == self.lastNotifiedMessageInfo:
 			return nextHandler()
 
-		if self.notificationMode != self.MODE_OFF:
+		if (
+			not self._shouldSuppressNewMessageNotification()
+			and queueUpdateKind == self.QUEUE_UPDATE_APPEND
+			and self.notificationMode != self.MODE_OFF
+		):
 			self.performNotification(latestMessage)
-		self.lastNotifiedMessageInfo = currentMessageInfo
+		self.lastNotifiedMessageInfo = messageInfo
 		nextHandler()
 
 	def event_gainFocus(self, obj: Any, nextHandler: Any):
@@ -674,26 +510,25 @@ class AppModule(appModuleHandler.AppModule):
 		Entering the message list activates the temporary review queue and marks
 		the current newest message as the notification baseline.
 		"""
-		try:
-			isMessageItem = (
-				self._isMessageItem(obj)
-				and obj.parent
-				and self._isMessageList(obj.parent)
+		parent = obj.parent
+		if (
+			obj.role == controlTypes.Role.LISTITEM
+			and parent
+			and parent.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
+			and (
+				obj.UIAAutomationId == self.MESSAGE_ITEM_UIA_ID
+				or obj.UIAElement.CachedClassName == self.MESSAGE_TIME_ITEM_UIA_CLASS
 			)
-		except Exception:
-			isMessageItem = False
-
-		if isMessageItem:
+		):
 			self._suppressNotificationsForUserAction()
-			self.refreshMessageQueue(obj.parent, setNotificationBaseline=True)
-		elif self._isMessageList(obj):
+			self.refreshMessageQueue(parent, setNotificationBaseline=True)
+		elif obj.UIAAutomationId == self.MESSAGE_LIST_UIA_ID:
 			self.refreshMessageQueue(obj, setNotificationBaseline=True)
-		elif self._isMessageInputObject(obj):
+		elif obj.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID:
 			self.refreshMessageQueue(setNotificationBaseline=True)
 		nextHandler()
 
 	def _suppressNotificationsForUserAction(self):
-		"""Temporarily suppress notifications caused by active message review."""
 		self.isNotificationSuppressed = True
 		if self.notificationSuppressionTimer and self.notificationSuppressionTimer.IsRunning():
 			self.notificationSuppressionTimer.Restart(self.NOTIFICATION_SUPPRESSION_DELAY)
@@ -704,62 +539,44 @@ class AppModule(appModuleHandler.AppModule):
 			)
 
 	def _clearNotificationSuppression(self):
-		"""Allow automatic new-message notifications again."""
 		self.isNotificationSuppressed = False
 
 	def _shouldSuppressNewMessageNotification(self) -> bool:
-		"""Return whether automatic new-message notification should be muted."""
 		return self.isNotificationSuppressed or self.isBoundaryScrollPending
 
 	def performNotification(self, messageObj: Any):
-		"""Play the configured notification for a new message."""
 		playWaveFile(self.SOUND_NEW_MESSAGE)
 		if self.notificationMode == self.MODE_SOUND_AND_SPEECH:
 			ui.message(messageObj.name)
 
 	def _isMessageInputFocus(self) -> bool:
-		"""Return whether the current focus is the WeChat chat message input."""
-		try:
-			focus = api.getFocusObject()
-		except Exception:
-			return False
+		focus = api.getFocusObject()
+		return focus is not None and focus.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID
 
-		if focus is None:
-			return False
-
-		return self._isMessageInputObject(focus)
-
-	def _isMessageInputObject(self, obj: Any) -> bool:
-		"""Return whether an object is the WeChat chat message input."""
-		return self._getObjectAutomationID(obj) == self.MESSAGE_INPUT_UIA_ID
-
-	def _sendReviewGestureThrough(self, gesture: Any):
-		"""Let WeChat or NVDA handle a review gesture outside the message input."""
+	def _cancelPendingBoundaryReview(self):
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
-			self.scrollLoadTimer = None
-		if self.isBoundaryScrollPending:
-			self.isBoundaryScrollPending = False
-		try:
-			gesture.send()
-		except Exception:
-			log.debugWarning("Unable to send WeChat review gesture through.", exc_info=True)
+		self.scrollLoadTimer = None
+		self.isBoundaryScrollPending = False
 
-	def _readReviewDirection(self, state: dict[str, Any], direction: int) -> bool:
-		"""Read one relative review movement, scrolling only at a queue boundary."""
-		if direction > 0 and state["currentIndex"] >= len(state["messages"]) - 1:
-			return self._speakCurrentMessage(state)
-		if self._shouldScrollBeforeRelativeRead(state, direction):
+	def _sendReviewGestureThrough(self, gesture: Any):
+		self._cancelPendingBoundaryReview()
+		gesture.send()
+
+	def _readReviewDirection(self, state: ReviewState, direction: int) -> bool:
+		if direction > 0 and state.currentIndex >= len(state.messages) - 1:
+			return self._speakMessageAtIndex(state, state.currentIndex)
+		nextIndex = state.currentIndex + direction
+		if nextIndex < 0 or nextIndex >= len(state.messages):
 			self._scrollBoundaryAndRead(state, direction)
 			return False
-		return self._speakRelativeMessage(state, direction)
+		return self._speakMessageAtIndex(state, nextIndex)
 
-	def _getActiveReviewState(self) -> dict[str, Any] | None:
-		"""Return the active temporary review state."""
+	def _getActiveReviewState(self) -> ReviewState | None:
 		state = self.reviewState
-		if not state["messages"]:
+		if not state.messages:
 			state = self.refreshMessageQueue(setNotificationBaseline=True)
-		if state["messages"]:
+		if state.messages:
 			return state
 		ui.message(self.NO_MESSAGES_TEXT)
 		return None
@@ -769,7 +586,6 @@ class AppModule(appModuleHandler.AppModule):
 		gesture: Any,
 		direction: int,
 	):
-		"""Handle Alt+Arrow message review from the WeChat message input."""
 		if not self._isMessageInputFocus():
 			self._sendReviewGestureThrough(gesture)
 			return
@@ -782,22 +598,16 @@ class AppModule(appModuleHandler.AppModule):
 		self._readReviewDirection(state, direction)
 
 	def _readIndexedReviewMessage(self, gesture: Any, index: int):
-		"""Read a review message at an index from the active queue."""
 		if not self._isMessageInputFocus():
 			self._sendReviewGestureThrough(gesture)
 			return
 		self._suppressNotificationsForUserAction()
-		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
-			self.scrollLoadTimer.Stop()
-			self.scrollLoadTimer = None
-		if self.isBoundaryScrollPending:
-			self.isBoundaryScrollPending = False
+		self._cancelPendingBoundaryReview()
 		state = self._getActiveReviewState()
 		if state is None:
 			return
-
 		if index < 0:
-			index = len(state["messages"]) + index
+			index = len(state.messages) + index
 		self._speakMessageAtIndex(state, index)
 
 	@script(
@@ -807,7 +617,6 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+upArrow",
 	)
 	def script_readPreviousMessage(self, gesture: Any):
-		"""Read the previous message from the active review queue."""
 		self._handleRelativeReviewGesture(gesture, -1)
 
 	@script(
@@ -817,7 +626,6 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+downArrow",
 	)
 	def script_readNextMessage(self, gesture: Any):
-		"""Read the next message from the active review queue."""
 		self._handleRelativeReviewGesture(gesture, 1)
 
 	@script(
@@ -827,7 +635,6 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+home",
 	)
 	def script_readFirstMessage(self, gesture: Any):
-		"""Read the oldest message from the active review queue."""
 		self._readIndexedReviewMessage(gesture, 0)
 
 	@script(
@@ -837,7 +644,6 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:alt+end",
 	)
 	def script_readLastMessage(self, gesture: Any):
-		"""Read the newest message from the active review queue."""
 		self._readIndexedReviewMessage(gesture, -1)
 
 	@script(
@@ -847,13 +653,12 @@ class AppModule(appModuleHandler.AppModule):
 		gesture="kb:f3",
 	)
 	def script_toggleNotificationMode(self, gesture: Any):
-		"""Cycle through new message notification modes."""
 		self.notificationMode = (self.notificationMode + 1) % 3
 		config.conf[self.CONFIG_SECTION][self.CONFIG_KEY_NOTIFICATION_MODE] = self.notificationMode
-		modeMessages = {
-			self.MODE_OFF: _("Off"),
-			self.MODE_SOUND_ONLY: _("Sound Only"),
-			self.MODE_SOUND_AND_SPEECH: _("Sound and speech"),
-		}
-		ui.message(modeMessages.get(self.notificationMode))
+		modeMessages = (
+			_("Off"),
+			_("Sound Only"),
+			_("Sound and speech"),
+		)
+		ui.message(modeMessages[self.notificationMode])
 		self.refreshMessageQueue(setNotificationBaseline=True)
