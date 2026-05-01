@@ -260,7 +260,7 @@ class AppModule(appModuleHandler.AppModule):
 		if not target or len(target) > len(source):
 			return None
 		for index in range(len(source) - len(target) + 1):
-			if source[index:index + len(target)] == target:
+			if source[index : index + len(target)] == target:
 				return index
 		return None
 
@@ -511,12 +511,8 @@ class AppModule(appModuleHandler.AppModule):
 			return nextHandler()
 		automationId = latestMessage.UIAAutomationId
 		className = latestMessage.UIAElement.CachedClassName
-		if (
-			latestMessage.role != controlTypes.Role.LISTITEM
-			or (
-				automationId != self.MESSAGE_ITEM_UIA_ID
-				and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
-			)
+		if latestMessage.role != controlTypes.Role.LISTITEM or (
+			automationId != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
 		):
 			return nextHandler()
 		text = latestMessage.name
@@ -682,7 +678,9 @@ class AppModule(appModuleHandler.AppModule):
 
 	@script(
 		# Translators: Description for the command that changes new message notification mode.
-		description=_("Cycles through new message notification modes (Off -> Sound Only -> Sound and Speech)"),
+		description=_(
+			"Cycles through new message notification modes (Off -> Sound Only -> Sound and Speech)",
+		),
 		category=SCRIPT_CATEGORY,
 		gesture="kb:f3",
 	)
