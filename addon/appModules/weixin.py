@@ -56,7 +56,7 @@ class AppModule(appModuleHandler.AppModule):
 	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowIcon"
 	CONFIG_SECTION = "weixin"
 	CONFIG_KEY_NOTIFICATION_MODE = "notificationMode"
-	MAX_MESSAGE_QUEUE_SIZE = 200
+	MAX_MESSAGE_QUEUE_SIZE = 500
 	MAX_SIMPLE_NEXT_TO_SEARCH = 80
 	SCROLL_LOAD_DELAY = 25
 	NOTIFICATION_SUPPRESSION_DELAY = 2000
@@ -344,24 +344,18 @@ class AppModule(appModuleHandler.AppModule):
 		ui.message(state.messages[index])
 		return True
 
-	def _getBoundaryTargetIndex(
+	def _getPreviousBoundaryTargetIndex(
 		self,
 		state: ReviewState,
 		oldMessages: list[str],
-		direction: int,
 	) -> int | None:
 		oldMessagesStart = self._findSubList(state.messages, oldMessages)
-		if oldMessagesStart is None:
-			return None
-		if direction < 0 and oldMessagesStart > 0:
+		if oldMessagesStart is not None and oldMessagesStart > 0:
 			return oldMessagesStart - 1
-		if direction > 0 and oldMessagesStart + len(oldMessages) < len(state.messages):
-			return oldMessagesStart + len(oldMessages)
 		return None
 
-	def _readAfterBoundaryScroll(
+	def _readAfterPreviousBoundaryScroll(
 		self,
-		direction: int,
 		oldMessages: list[str],
 		oldIndex: int,
 		nextAttempt: int,
@@ -375,13 +369,13 @@ class AppModule(appModuleHandler.AppModule):
 			if not state.messages:
 				return
 
-			targetIndex = self._getBoundaryTargetIndex(state, oldMessages, direction)
+			targetIndex = self._getPreviousBoundaryTargetIndex(state, oldMessages)
 			if targetIndex is not None:
 				if self._speakMessageAtIndex(state, targetIndex):
 					return
 			if nextAttempt <= self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
 				scheduledRetry = True
-				self._scrollBoundaryAndRead(state, direction, attempt=nextAttempt)
+				self._scrollPreviousBoundaryAndRead(state, attempt=nextAttempt)
 				return
 
 			oldMessagesStart = self._findSubList(state.messages, oldMessages)
@@ -393,8 +387,8 @@ class AppModule(appModuleHandler.AppModule):
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
 
-	def _scrollBoundaryAndRead(self, state: ReviewState, direction: int, attempt: int = 0):
-		"""Scroll beyond the visible boundary and read after WeChat updates the list."""
+	def _scrollPreviousBoundaryAndRead(self, state: ReviewState, attempt: int = 0):
+		"""Scroll above the visible boundary and read after WeChat updates the list."""
 		self._suppressNotificationsForUserAction()
 		messageList = self._findCurrentMessageList()
 		if messageList is None:
@@ -414,20 +408,17 @@ class AppModule(appModuleHandler.AppModule):
 		else:
 			wheelUnits = 4
 		scrollSteps = winUser.WHEEL_DELTA * wheelUnits
-		if direction > 0:
-			scrollSteps = -scrollSteps
 
 		if not self._scrollMessageList(messageList, scrollSteps):
 			if attempt < self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
-				self._scrollBoundaryAndRead(state, direction, attempt=attempt + 1)
+				self._scrollPreviousBoundaryAndRead(state, attempt=attempt + 1)
 				return
 			self.isBoundaryScrollPending = False
 			return
 
 		self.scrollLoadTimer = wx.CallLater(
 			self.SCROLL_LOAD_DELAY,
-			self._readAfterBoundaryScroll,
-			direction,
+			self._readAfterPreviousBoundaryScroll,
 			oldMessages,
 			oldIndex,
 			attempt + 1,
@@ -525,12 +516,14 @@ class AppModule(appModuleHandler.AppModule):
 		gesture.send()
 
 	def _readReviewDirection(self, state: ReviewState, direction: int) -> bool:
-		if direction > 0 and state.currentIndex >= len(state.messages) - 1:
-			return self._speakMessageAtIndex(state, state.currentIndex)
+		if direction > 0:
+			state = self.refreshMessageQueue(setNotificationBaseline=True)
 		nextIndex = state.currentIndex + direction
-		if nextIndex < 0 or nextIndex >= len(state.messages):
-			self._scrollBoundaryAndRead(state, direction)
+		if nextIndex < 0:
+			self._scrollPreviousBoundaryAndRead(state)
 			return False
+		if nextIndex >= len(state.messages):
+			return self._speakMessageAtIndex(state, state.currentIndex)
 		return self._speakMessageAtIndex(state, nextIndex)
 
 	def _getActiveReviewState(self) -> ReviewState | None:
@@ -568,6 +561,8 @@ class AppModule(appModuleHandler.AppModule):
 		if state is None:
 			return
 		if index < 0:
+			if state.currentIndex >= len(state.messages) - 1:
+				state = self.refreshMessageQueue(setNotificationBaseline=True)
 			index = len(state.messages) + index
 		self._speakMessageAtIndex(state, index)
 
