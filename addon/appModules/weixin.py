@@ -34,7 +34,7 @@ addonHandler.initTranslation()
 class MessageRecord(NamedTuple):
 	"""Accessible text and identity for a visible WeChat message."""
 
-	info: tuple[Any, ...]
+	identity: tuple[Any, ...]
 	text: str
 
 
@@ -88,9 +88,8 @@ class AppModule(appModuleHandler.AppModule):
 		self.notificationMode = config.conf[self.CONFIG_SECTION][self.CONFIG_KEY_NOTIFICATION_MODE]
 		self.isNotificationSuppressed = False
 		self.notificationSuppressionTimer = None
-		self.lastNotifiedMessageInfo = None
+		self.lastNotifiedMessageRecord = None
 		self.reviewState = ReviewState(messages=[])
-		self.activeMessageList = None
 		self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 		self.scrollLoadTimer = None
 		self.isBoundaryScrollPending = False
@@ -126,14 +125,7 @@ class AppModule(appModuleHandler.AppModule):
 	def _findCurrentMessageList(self) -> Any | None:
 		focus = api.getFocusObject()
 		if focus is not None and focus.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID:
-			messageList = self._findMessageListAfterInput(focus)
-			if messageList is not None:
-				return messageList
-		if (
-			self.activeMessageList is not None
-			and self.activeMessageList.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
-		):
-			return self.activeMessageList
+			return self._findMessageListAfterInput(focus)
 		return None
 
 	def _getUIAMessageRecord(self, element: Any) -> MessageRecord | None:
@@ -166,7 +158,7 @@ class AppModule(appModuleHandler.AppModule):
 			location = tuple(int(value) for value in boundingRectangle)
 		itemID = automationID or className
 		return MessageRecord(
-			info=("uia", itemID, location, text),
+			identity=("uia", itemID, location, text),
 			text=text,
 		)
 
@@ -295,20 +287,9 @@ class AppModule(appModuleHandler.AppModule):
 		state = self.reviewState
 		visibleMessages = [record.text for record in records]
 		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
-		self.activeMessageList = messageList
 		if setNotificationBaseline:
-			lastRecord = records[-1]
-			self.lastNotifiedMessageInfo = (lastRecord.info, lastRecord.text)
+			self.lastNotifiedMessageRecord = records[-1]
 		return state
-
-	def _getMouseScrollPoint(self, messageList: Any) -> tuple[int, int] | None:
-		left, top, width, height = messageList.location
-		if width <= 0 or height <= 0:
-			return None
-		return int(left + width / 2), int(top + height / 2)
-
-	def _isKeyDown(self, vkCode: int) -> bool:
-		return bool(winUser.getAsyncKeyState(vkCode) & 32768)
 
 	def _getPressedAltKeys(self) -> list[tuple[int, int]]:
 		pressedKeys = []
@@ -317,9 +298,9 @@ class AppModule(appModuleHandler.AppModule):
 			(winUser.VK_RMENU, self.KEYEVENTF_EXTENDEDKEY),
 		)
 		for vkCode, flags in altKeyFlags:
-			if self._isKeyDown(vkCode):
+			if winUser.getAsyncKeyState(vkCode) & 32768:
 				pressedKeys.append((vkCode, flags))
-		if not pressedKeys and self._isKeyDown(winUser.VK_MENU):
+		if not pressedKeys and winUser.getAsyncKeyState(winUser.VK_MENU) & 32768:
 			pressedKeys.append((winUser.VK_MENU, 0))
 		return pressedKeys
 
@@ -330,9 +311,10 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _scrollMessageList(self, messageList: Any, scrollSteps: int) -> bool:
 		"""Scroll the message list by moving the mouse to the list temporarily."""
-		point = self._getMouseScrollPoint(messageList)
-		if point is None:
+		left, top, width, height = messageList.location
+		if width <= 0 or height <= 0:
 			return False
+		point = int(left + width / 2), int(top + height / 2)
 		oldX, oldY = winUser.getCursorPos()
 		pressedAltKeys = self._getPressedAltKeys()
 		try:
@@ -411,20 +393,6 @@ class AppModule(appModuleHandler.AppModule):
 			if not scheduledRetry:
 				self.isBoundaryScrollPending = False
 
-	def _performScrollAttempt(self, messageList: Any, direction: int, attempt: int) -> bool:
-		if attempt >= 2:
-			wheelUnits = 8
-		elif attempt >= 1:
-			wheelUnits = 6
-		else:
-			wheelUnits = 4
-		scrollSteps = winUser.WHEEL_DELTA * wheelUnits
-		if direction > 0:
-			scrollSteps = -scrollSteps
-		if 0 <= attempt <= self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
-			return self._scrollMessageList(messageList, scrollSteps)
-		return False
-
 	def _scrollBoundaryAndRead(self, state: ReviewState, direction: int, attempt: int = 0):
 		"""Scroll beyond the visible boundary and read after WeChat updates the list."""
 		self._suppressNotificationsForUserAction()
@@ -439,7 +407,17 @@ class AppModule(appModuleHandler.AppModule):
 			self.scrollLoadTimer.Stop()
 		self.isBoundaryScrollPending = True
 
-		if not self._performScrollAttempt(messageList, direction, attempt):
+		if attempt >= 2:
+			wheelUnits = 8
+		elif attempt >= 1:
+			wheelUnits = 6
+		else:
+			wheelUnits = 4
+		scrollSteps = winUser.WHEEL_DELTA * wheelUnits
+		if direction > 0:
+			scrollSteps = -scrollSteps
+
+		if not self._scrollMessageList(messageList, scrollSteps):
 			if attempt < self.MAX_BOUNDARY_SCROLL_ATTEMPTS:
 				self._scrollBoundaryAndRead(state, direction, attempt=attempt + 1)
 				return
@@ -456,12 +434,6 @@ class AppModule(appModuleHandler.AppModule):
 		)
 
 	def event_valueChange(self, obj: Any, nextHandler: Any):
-		"""
-		Handle chat message list scrollbar changes.
-
-		The event updates the review queue and reports only tail-appended
-		messages as automatic new-message notifications.
-		"""
 		if (
 			obj.role != controlTypes.Role.SCROLLBAR
 			or not obj.parent
@@ -487,29 +459,26 @@ class AppModule(appModuleHandler.AppModule):
 		text = latestMessage.name
 		if not text or speech.isBlank(text):
 			return nextHandler()
-		messageInfo = (
-			("uia", automationID or className, tuple(latestMessage.location), text),
-			text,
+		messageRecord = MessageRecord(
+			identity=("uia", automationID or className, tuple(latestMessage.location), text),
+			text=text,
 		)
-		if messageInfo == self.lastNotifiedMessageInfo:
+		if messageRecord == self.lastNotifiedMessageRecord:
 			return nextHandler()
 
 		if (
-			not self._shouldSuppressNewMessageNotification()
+			not self.isNotificationSuppressed
+			and not self.isBoundaryScrollPending
 			and queueUpdateKind == self.QUEUE_UPDATE_APPEND
 			and self.notificationMode != self.MODE_OFF
 		):
-			self.performNotification(latestMessage)
-		self.lastNotifiedMessageInfo = messageInfo
+			playWaveFile(self.SOUND_NEW_MESSAGE)
+			if self.notificationMode == self.MODE_SOUND_AND_SPEECH:
+				ui.message(latestMessage.name)
+		self.lastNotifiedMessageRecord = messageRecord
 		nextHandler()
 
 	def event_gainFocus(self, obj: Any, nextHandler: Any):
-		"""
-		Handle focus changes in WeChat.
-
-		Entering the message list activates the temporary review queue and marks
-		the current newest message as the notification baseline.
-		"""
 		parent = obj.parent
 		if (
 			obj.role == controlTypes.Role.LISTITEM
@@ -540,14 +509,6 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _clearNotificationSuppression(self):
 		self.isNotificationSuppressed = False
-
-	def _shouldSuppressNewMessageNotification(self) -> bool:
-		return self.isNotificationSuppressed or self.isBoundaryScrollPending
-
-	def performNotification(self, messageObj: Any):
-		playWaveFile(self.SOUND_NEW_MESSAGE)
-		if self.notificationMode == self.MODE_SOUND_AND_SPEECH:
-			ui.message(messageObj.name)
 
 	def _isMessageInputFocus(self) -> bool:
 		focus = api.getFocusObject()
