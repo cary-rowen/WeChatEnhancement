@@ -7,38 +7,65 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 'WeChatEnhancement' '1.7.5'\n"
 "Report-Msgid-Bugs-To: 'nvda-translations@groups.io'\n"
-"POT-Creation-Date: 2025-08-10 08:21+0800\n"
-"PO-Revision-Date: 2025-08-10 08:22+0800\n"
+"POT-Creation-Date: 2026-05-01 16:57+0800\n"
+"PO-Revision-Date: 2026-05-01 17:00+0800\n"
 "Last-Translator: \n"
 "Language-Team: \n"
 "Language: zh_CN\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Generator: Poedit 3.6\n"
+"X-Generator: Poedit 3.9\n"
 
+#. Translators: The name of the category in NVDA's input gestures dialog.
 #. Add-on summary, usually the user visible name of the addon.
 #. Translators: Summary for this add-on
 #. to be shown on installation and add-on information found in Add-ons Manager.
-#: addon\appModules\weixin.py:32 buildVars.py:23
+#: addon\appModules\weixin.py:81 buildVars.py:23
 msgid "PC WeChat Enhancement"
 msgstr "PC 微信增强"
 
-#: addon\appModules\weixin.py:134
+#. Translators: Reported when the current chat has no messages available for review.
+#: addon\appModules\weixin.py:85
+msgid "No messages in the current chat."
+msgstr "当前聊天中没有消息。"
+
+#. Translators: Description for the command that reads the previous WeChat message.
+#: addon\appModules\weixin.py:649
+msgid "Reads the previous message in the current WeChat chat"
+msgstr "读出当前聊天中的上一条消息"
+
+#. Translators: Description for the command that reads the next WeChat message.
+#: addon\appModules\weixin.py:658
+msgid "Reads the next message in the current WeChat chat"
+msgstr "读出当前聊天中的下一条消息"
+
+#. Translators: Description for the command that reads the first WeChat message.
+#: addon\appModules\weixin.py:667
+msgid "Reads the first message in the current WeChat chat"
+msgstr "读出当前聊天中的首条消息"
+
+#. Translators: Description for the command that reads the last WeChat message.
+#: addon\appModules\weixin.py:676
+msgid "Reads the last message in the current WeChat chat"
+msgstr "读出当前聊天中的最后一条消息"
+
+#. Translators: Description for the command that changes new message notification mode.
+#: addon\appModules\weixin.py:685
 msgid ""
 "Cycles through new message notification modes (Off -> Sound Only -> Sound "
 "and Speech)"
 msgstr "在消息通知模式之间循环切换"
 
-#: addon\appModules\weixin.py:142
+#: addon\appModules\weixin.py:693
 msgid "Off"
 msgstr "关闭"
 
-#: addon\appModules\weixin.py:143
+#: addon\appModules\weixin.py:694
 msgid "Sound Only"
 msgstr "仅提示音"
 
-#: addon\appModules\weixin.py:144
+#: addon\appModules\weixin.py:695
 msgid "Sound and speech"
 msgstr "语音和提示音"
 
