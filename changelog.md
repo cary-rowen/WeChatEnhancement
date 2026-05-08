@@ -1,3 +1,8 @@
-### 2.0.1
+### 2.3.0
 
-Add missing popup sound.
+* Fix global search result focus.
+* Add shared WeChat focus helpers.
+* Add Official Accounts focus shortcut.
+* Add contacts and search focus shortcuts.
+* Add call tray focus shortcut.
+* Document focus shortcuts.
