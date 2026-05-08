@@ -74,6 +74,8 @@ class AppModule(appModuleHandler.AppModule):
 	CONTACT_LIST_UIA_ID = "primary_table_.contact_list"
 	CONTACT_LIST_UIA_CLASS = "mmui::StickyHeaderRecyclerListView"
 	SEARCH_EDIT_UIA_CLASS = "mmui::XValidatorTextEdit"
+	VOIP_TRAY_WINDOW_UIA_ID = "VOIPTrayWindow"
+	VOIP_TRAY_WINDOW_UIA_CLASS = "mmui::VOIPTrayWindow"
 	SEARCH_RESULT_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
 	MAIN_WINDOW_UIA_CLASS = "mmui::MainWindow"
 	SINGLE_CHAT_WINDOW_UIA_CLASS = "mmui::ChatSingleWindow"
@@ -332,6 +334,14 @@ class AppModule(appModuleHandler.AppModule):
 			UIA.UIA_EditControlTypeId,
 			controlTypes.Role.EDITABLETEXT,
 			self.SEARCH_EDIT_UIA_CLASS,
+		)
+
+	def _findVoipTrayWindow(self) -> UIAObject | None:
+		"""Find the audio/video call tray window beside the foreground window."""
+		return self._findForegroundSibling(
+			controlTypes.Role.WINDOW,
+			self.VOIP_TRAY_WINDOW_UIA_CLASS,
+			self.VOIP_TRAY_WINDOW_UIA_ID,
 		)
 
 	def _getCurrentChatIdentity(self, focus: UIAObject) -> ChatIdentity | None:
@@ -872,6 +882,20 @@ class AppModule(appModuleHandler.AppModule):
 			self._findSearchEdit(),
 			gesture,
 			"Unable to focus the WeChat search field.",
+		)
+
+	@script(
+		# Translators: Description for the command that moves focus to the WeChat audio/video call tray window.
+		description=_("Moves focus to the WeChat audio/video call tray window"),
+		category=SCRIPT_CATEGORY,
+		gesture="kb:alt+v",
+	)
+	def script_focusVoipTrayWindow(self, gesture: inputCore.InputGesture) -> None:
+		"""Move focus to the audio/video call tray window."""
+		self._focusObjectOrSendGesture(
+			self._findVoipTrayWindow(),
+			gesture,
+			"Unable to focus the WeChat audio/video call tray window.",
 		)
 
 	@script(
