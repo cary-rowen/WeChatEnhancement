@@ -66,7 +66,7 @@ class AppModule(appModuleHandler.AppModule):
 	MESSAGE_TOOLBAR_UIA_ID = "tool_bar_accessible"
 	MESSAGE_ITEM_UIA_ID = "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"
 	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
-	MAIN_WINDOW_CLASS_NAME = "Qt51514QWindowIcon"
+	SEARCH_RESULT_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
 	MAIN_WINDOW_UIA_CLASS = "mmui::MainWindow"
 	SINGLE_CHAT_WINDOW_UIA_CLASS = "mmui::ChatSingleWindow"
 	CONFIG_SECTION = "weixin"
@@ -113,7 +113,7 @@ class AppModule(appModuleHandler.AppModule):
 		eventHandler.requestEvents(
 			"gainFocus",
 			processId=self.processID,
-			windowClassName=self.MAIN_WINDOW_CLASS_NAME,
+			windowClassName=self.SEARCH_RESULT_WINDOW_CLASS_NAME,
 		)
 
 	def terminate(self) -> None:
