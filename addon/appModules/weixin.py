@@ -30,6 +30,7 @@ from NVDAObjects import NVDAObject
 from NVDAObjects.UIA import UIA as UIAObject
 from nvwave import playWaveFile
 from scriptHandler import script
+from UIAHandler.utils import createUIAMultiPropertyCondition
 
 if TYPE_CHECKING:
 	import inputCore
@@ -41,6 +42,8 @@ ChatIdentity: TypeAlias = tuple[Literal["single", "main"], str]
 MessageIdentity: TypeAlias = tuple[Literal["uia"], str, tuple[int, ...] | None, str]
 NextHandler: TypeAlias = Callable[[], None]
 PressedAltKey: TypeAlias = tuple[int, int]
+UIABounds: TypeAlias = tuple[int, int, int, int]
+PositionedUIAObject: TypeAlias = tuple[UIAObject, UIABounds]
 
 
 class MessageRecord(NamedTuple):
@@ -160,6 +163,138 @@ class AppModule(appModuleHandler.AppModule):
 			except Exception:
 				self.activeMessageList = None
 		return self._findMessageListAfterInput(focus)
+
+	def _getMainWindowObject(self) -> UIAObject | None:
+		"""Return the foreground WeChat main window."""
+		foreground = api.getForegroundObject()
+		if not isinstance(foreground, UIAObject):
+			return None
+		try:
+			if foreground.UIAElement.CachedClassName != self.MAIN_WINDOW_UIA_CLASS:
+				return None
+		except Exception:
+			return None
+		return foreground
+
+	def _getMatchingUIAObject(
+		self,
+		role: controlTypes.Role,
+		obj: NVDAObject | None,
+		className: str,
+		automationId: str | None = None,
+	) -> PositionedUIAObject | None:
+		"""Return matching visible focusable UIA object details."""
+		if not isinstance(obj, UIAObject):
+			return None
+		try:
+			if (
+				obj.role != role
+				or not obj.isFocusable
+				or obj.UIAElement.CachedClassName != className
+				or (automationId is not None and obj.UIAAutomationId != automationId)
+			):
+				return None
+			left, top, width, height = obj.location
+			if width <= 0 or height <= 0:
+				return None
+		except Exception:
+			return None
+		return obj, (left, top, left + width, top + height)
+
+	def _getVisibleFocusableUIAObject(
+		self,
+		elements: UIA.IUIAutomationElementArray,
+		index: int,
+		role: controlTypes.Role,
+		className: str,
+		automationId: str | None = None,
+	) -> PositionedUIAObject | None:
+		"""Return a matching UIA object and its bounds from an element array."""
+		try:
+			element = elements.getElement(index).buildUpdatedCache(UIAHandler.handler.baseCacheRequest)
+			obj = UIAObject(UIAElement=element)
+		except Exception:
+			log.debugWarning("Unable to create a WeChat main window child object.", exc_info=True)
+			return None
+		return self._getMatchingUIAObject(role, obj, className, automationId)
+
+	def _getMainWindowDescendants(
+		self,
+		controlType: int,
+		role: controlTypes.Role,
+		className: str,
+		automationId: str | None = None,
+	) -> list[PositionedUIAObject]:
+		"""Return matching main-window descendants, collected from the end."""
+		mainWindow = self._getMainWindowObject()
+		if mainWindow is None:
+			return []
+		properties = {
+			UIA.UIA_ControlTypePropertyId: controlType,
+			UIA.UIA_ClassNamePropertyId: className,
+			UIA.UIA_IsKeyboardFocusablePropertyId: True,
+		}
+		if automationId is not None:
+			properties[UIA.UIA_AutomationIdPropertyId] = automationId
+		try:
+			condition = createUIAMultiPropertyCondition(properties)
+			elements = mainWindow.UIAElement.findAll(UIAHandler.TreeScope_Descendants, condition)
+			elementCount = elements.length
+		except Exception:
+			log.debugWarning("Unable to find a WeChat main window descendant.", exc_info=True)
+			return []
+		candidates = []
+		for index in range(elementCount - 1, -1, -1):
+			candidate = self._getVisibleFocusableUIAObject(
+				elements,
+				index,
+				role,
+				className,
+				automationId,
+			)
+			if candidate is not None:
+				candidates.append(candidate)
+		return candidates
+
+	def _findMainWindowDescendant(
+		self,
+		controlType: int,
+		role: controlTypes.Role,
+		className: str,
+		automationId: str | None = None,
+	) -> UIAObject | None:
+		"""Find a visible focusable main-window descendant, searching from the end."""
+		candidates = self._getMainWindowDescendants(controlType, role, className, automationId)
+		if not candidates:
+			return None
+		return candidates[0][0]
+
+	def _doBoundsVerticallyOverlap(self, firstBounds: UIABounds, secondBounds: UIABounds) -> bool:
+		"""Return whether two bounds overlap on the vertical axis."""
+		_firstLeft, firstTop, _firstRight, firstBottom = firstBounds
+		_secondLeft, secondTop, _secondRight, secondBottom = secondBounds
+		return firstTop < secondBottom and secondTop < firstBottom
+
+	def _findForegroundSibling(
+		self,
+		role: controlTypes.Role,
+		className: str,
+		automationId: str,
+	) -> UIAObject | None:
+		"""Find a matching object adjacent to the foreground object."""
+		foreground = api.getForegroundObject()
+		candidate = self._getMatchingUIAObject(role, foreground, className, automationId)
+		if candidate is not None:
+			return candidate[0]
+		for relation in ("simplePrevious", "simpleNext"):
+			try:
+				obj = getattr(foreground, relation)
+			except Exception:
+				continue
+			candidate = self._getMatchingUIAObject(role, obj, className, automationId)
+			if candidate is not None:
+				return candidate[0]
+		return None
 
 	def _getCurrentChatIdentity(self, focus: UIAObject) -> ChatIdentity | None:
 		foreground = api.getForegroundObject()
@@ -639,6 +774,25 @@ class AppModule(appModuleHandler.AppModule):
 				self.reviewQueueUpdateOnLastRefresh = self.QUEUE_UPDATE_UNCHANGED
 			index = len(state.messages) + index
 		self._speakMessageAtIndex(state, index)
+
+	def _focusObjectOrSendGesture(
+		self,
+		obj: UIAObject | None,
+		gesture: inputCore.InputGesture,
+		logMessage: str,
+	) -> None:
+		"""Focus an object, falling back to the original gesture."""
+		if obj is None:
+			gesture.send()
+			return
+		try:
+			obj.setFocus()
+		except Exception:
+			log.debugWarning(logMessage, exc_info=True)
+			gesture.send()
+			return
+		self._cancelPendingBoundaryReview()
+		api.setNavigatorObject(obj, True)
 
 	@script(
 		# Translators: Description for the command that reads the previous WeChat message.
