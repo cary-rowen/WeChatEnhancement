@@ -71,6 +71,9 @@ class AppModule(appModuleHandler.AppModule):
 	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
 	SESSION_LIST_UIA_ID = "session_list"
 	SESSION_LIST_UIA_CLASS = "mmui::XTableView"
+	CONTACT_LIST_UIA_ID = "primary_table_.contact_list"
+	CONTACT_LIST_UIA_CLASS = "mmui::StickyHeaderRecyclerListView"
+	SEARCH_EDIT_UIA_CLASS = "mmui::XValidatorTextEdit"
 	SEARCH_RESULT_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
 	MAIN_WINDOW_UIA_CLASS = "mmui::MainWindow"
 	SINGLE_CHAT_WINDOW_UIA_CLASS = "mmui::ChatSingleWindow"
@@ -313,6 +316,23 @@ class AppModule(appModuleHandler.AppModule):
 				if referenceRight <= left and self._doBoundsVerticallyOverlap(referenceBounds, bounds):
 					return obj
 		return None
+
+	def _findContactList(self) -> UIAObject | None:
+		"""Find the Contacts list in the main window."""
+		return self._findMainWindowDescendant(
+			UIA.UIA_ListControlTypeId,
+			controlTypes.Role.LIST,
+			self.CONTACT_LIST_UIA_CLASS,
+			self.CONTACT_LIST_UIA_ID,
+		)
+
+	def _findSearchEdit(self) -> UIAObject | None:
+		"""Find the search edit field in the main window."""
+		return self._findMainWindowDescendant(
+			UIA.UIA_EditControlTypeId,
+			controlTypes.Role.EDITABLETEXT,
+			self.SEARCH_EDIT_UIA_CLASS,
+		)
 
 	def _getCurrentChatIdentity(self, focus: UIAObject) -> ChatIdentity | None:
 		foreground = api.getForegroundObject()
@@ -824,6 +844,34 @@ class AppModule(appModuleHandler.AppModule):
 			self._findOfficialAccountList(),
 			gesture,
 			"Unable to focus the WeChat Official Accounts list.",
+		)
+
+	@script(
+		# Translators: Description for the command that moves focus to the WeChat Contacts list.
+		description=_("Moves focus to the WeChat Contacts list"),
+		category=SCRIPT_CATEGORY,
+		gesture="kb:alt+t",
+	)
+	def script_focusContactList(self, gesture: inputCore.InputGesture) -> None:
+		"""Move focus to the Contacts list in the WeChat main window."""
+		self._focusObjectOrSendGesture(
+			self._findContactList(),
+			gesture,
+			"Unable to focus the WeChat Contacts list.",
+		)
+
+	@script(
+		# Translators: Description for the command that moves focus to the WeChat search field.
+		description=_("Moves focus to the WeChat search field"),
+		category=SCRIPT_CATEGORY,
+		gesture="kb:alt+s",
+	)
+	def script_focusSearchEdit(self, gesture: inputCore.InputGesture) -> None:
+		"""Move focus to the search edit field in the WeChat main window."""
+		self._focusObjectOrSendGesture(
+			self._findSearchEdit(),
+			gesture,
+			"Unable to focus the WeChat search field.",
 		)
 
 	@script(
