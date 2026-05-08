@@ -69,6 +69,8 @@ class AppModule(appModuleHandler.AppModule):
 	MESSAGE_TOOLBAR_UIA_ID = "tool_bar_accessible"
 	MESSAGE_ITEM_UIA_ID = "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"
 	MESSAGE_TIME_ITEM_UIA_CLASS = "mmui::ChatItemView"
+	SESSION_LIST_UIA_ID = "session_list"
+	SESSION_LIST_UIA_CLASS = "mmui::XTableView"
 	SEARCH_RESULT_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
 	MAIN_WINDOW_UIA_CLASS = "mmui::MainWindow"
 	SINGLE_CHAT_WINDOW_UIA_CLASS = "mmui::ChatSingleWindow"
@@ -294,6 +296,22 @@ class AppModule(appModuleHandler.AppModule):
 			candidate = self._getMatchingUIAObject(role, obj, className, automationId)
 			if candidate is not None:
 				return candidate[0]
+		return None
+
+	def _findOfficialAccountList(self) -> UIAObject | None:
+		"""Find the Official Accounts list by its position in the main window."""
+		candidates = self._getMainWindowDescendants(
+			UIA.UIA_ListControlTypeId,
+			controlTypes.Role.LIST,
+			self.SESSION_LIST_UIA_CLASS,
+			self.SESSION_LIST_UIA_ID,
+		)
+		for obj, bounds in candidates:
+			left, _top, _right, _bottom = bounds
+			for _referenceObj, referenceBounds in candidates:
+				_referenceLeft, _referenceTop, referenceRight, _referenceBottom = referenceBounds
+				if referenceRight <= left and self._doBoundsVerticallyOverlap(referenceBounds, bounds):
+					return obj
 		return None
 
 	def _getCurrentChatIdentity(self, focus: UIAObject) -> ChatIdentity | None:
@@ -793,6 +811,20 @@ class AppModule(appModuleHandler.AppModule):
 			return
 		self._cancelPendingBoundaryReview()
 		api.setNavigatorObject(obj, True)
+
+	@script(
+		# Translators: Description for the command that moves focus to the WeChat Official Accounts list.
+		description=_("Moves focus to the WeChat Official Accounts list"),
+		category=SCRIPT_CATEGORY,
+		gesture="kb:alt+p",
+	)
+	def script_focusOfficialAccountList(self, gesture: inputCore.InputGesture) -> None:
+		"""Move focus to the Official Accounts list in the WeChat main window."""
+		self._focusObjectOrSendGesture(
+			self._findOfficialAccountList(),
+			gesture,
+			"Unable to focus the WeChat Official Accounts list.",
+		)
 
 	@script(
 		# Translators: Description for the command that reads the previous WeChat message.
