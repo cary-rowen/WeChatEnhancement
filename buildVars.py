@@ -23,17 +23,18 @@ addon_info = AddonInfo(
 	# Translators: Long description to be shown for this add-on on add-on information from add-on store
 	addon_description=_("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	addon_version="2.3.0",
+	addon_version="2.3.1",
 	# Brief changelog for this version
 	# Translators: what's new content for the add-on version to be shown in the add-on store
-	addon_changelog=_("""### 2.3.0
+	addon_changelog=_("""### 2.3
 
 * Fix global search result focus.
 * Add shared WeChat focus helpers.
 * Add Official Accounts focus shortcut.
 * Add contacts and search focus shortcuts.
 * Add call tray focus shortcut.
-* Document focus shortcuts."""),
+* Document focus shortcuts.
+* Update translation."""),
 	# Author(s)
 	addon_author="Cary-Rowen <manchen_0528@outlook.com>",
 	# URL for the add-on documentation support
