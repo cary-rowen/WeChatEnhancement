@@ -7,9 +7,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 'WeChatEnhancement' '1.7.5'\n"
 "Report-Msgid-Bugs-To: 'nvda-translations@groups.io'\n"
-"POT-Creation-Date: 2026-05-01 16:57+0800\n"
-"PO-Revision-Date: 2026-05-01 17:00+0800\n"
-"Last-Translator: \n"
+"POT-Creation-Date: 2026-05-10 15:51+0800\n"
+"PO-Revision-Date: 2026-05-10 15:59+0800\n"
+"Last-Translator: 完美很难 <1872265132@qq.com>\n"
 "Language-Team: \n"
 "Language: zh_CN\n"
 "MIME-Version: 1.0\n"
@@ -18,59 +18,102 @@ msgstr ""
 "X-Generator: Poedit 3.9\n"
 
 #. Translators: The name of the category in NVDA's input gestures dialog.
-#. Add-on summary, usually the user visible name of the addon.
-#. Translators: Summary for this add-on
-#. to be shown on installation and add-on information found in Add-ons Manager.
-#: addon\appModules\weixin.py:81 buildVars.py:23
+#. Add-on summary/title, usually the user visible name of the add-on
+#. Translators: Summary/title for this add-on
+#. to be shown on installation and add-on information found in add-on store
+#: addon\appModules\weixin.py:91 buildVars.py:21
 msgid "PC WeChat Enhancement"
 msgstr "PC 微信增强"
 
 #. Translators: Reported when the current chat has no messages available for review.
-#: addon\appModules\weixin.py:85
+#: addon\appModules\weixin.py:95
 msgid "No messages in the current chat."
 msgstr "当前聊天中没有消息。"
 
+#. Translators: Description for the command that moves focus to the WeChat Official Accounts list.
+#: addon\appModules\weixin.py:847
+msgid "Moves focus to the WeChat Official Accounts list"
+msgstr "将焦点移动到公众号列表"
+
+#. Translators: Description for the command that moves focus to the WeChat Contacts list.
+#: addon\appModules\weixin.py:861
+msgid "Moves focus to the WeChat Contacts list"
+msgstr "将焦点移动到通讯录列表"
+
+#. Translators: Description for the command that moves focus to the WeChat search field.
+#: addon\appModules\weixin.py:875
+msgid "Moves focus to the WeChat search field"
+msgstr "将焦点移动到搜索框"
+
+#. Translators: Description for the command that moves focus to the WeChat audio/video call tray window.
+#: addon\appModules\weixin.py:889
+msgid "Moves focus to the WeChat audio/video call tray window"
+msgstr "将焦点移动到音视频接听悬浮窗"
+
 #. Translators: Description for the command that reads the previous WeChat message.
-#: addon\appModules\weixin.py:649
+#: addon\appModules\weixin.py:903
 msgid "Reads the previous message in the current WeChat chat"
 msgstr "读出当前聊天中的上一条消息"
 
 #. Translators: Description for the command that reads the next WeChat message.
-#: addon\appModules\weixin.py:658
+#: addon\appModules\weixin.py:912
 msgid "Reads the next message in the current WeChat chat"
 msgstr "读出当前聊天中的下一条消息"
 
 #. Translators: Description for the command that reads the first WeChat message.
-#: addon\appModules\weixin.py:667
+#: addon\appModules\weixin.py:921
 msgid "Reads the first message in the current WeChat chat"
 msgstr "读出当前聊天中的首条消息"
 
 #. Translators: Description for the command that reads the last WeChat message.
-#: addon\appModules\weixin.py:676
+#: addon\appModules\weixin.py:930
 msgid "Reads the last message in the current WeChat chat"
 msgstr "读出当前聊天中的最后一条消息"
 
-#. Translators: Description for the command that changes new message notification mode.
-#: addon\appModules\weixin.py:685
+#: addon\appModules\weixin.py:940
 msgid ""
 "Cycles through new message notification modes (Off -> Sound Only -> Sound "
 "and Speech)"
 msgstr "在消息通知模式之间循环切换"
 
-#: addon\appModules\weixin.py:693
+#: addon\appModules\weixin.py:949
 msgid "Off"
 msgstr "关闭"
 
-#: addon\appModules\weixin.py:694
+#: addon\appModules\weixin.py:950
 msgid "Sound Only"
 msgstr "仅提示音"
 
-#: addon\appModules\weixin.py:695
+#: addon\appModules\weixin.py:951
 msgid "Sound and speech"
 msgstr "语音和提示音"
 
 #. Add-on description
-#. Translators: Long description to be shown for this add-on on add-on information from add-ons manager
-#: buildVars.py:26
+#. Translators: Long description to be shown for this add-on on add-on information from add-on store
+#: buildVars.py:24
 msgid "Enhance the experience of using PC WeChat for NVDA users."
 msgstr "增强 NVDA 用户使用 PC 微信的体验。"
+
+#. Brief changelog for this version
+#. Translators: what's new content for the add-on version to be shown in the add-on store
+#: buildVars.py:29
+msgid ""
+"### 2.3\n"
+"\n"
+"* Fix global search result focus.\n"
+"* Add shared WeChat focus helpers.\n"
+"* Add Official Accounts focus shortcut.\n"
+"* Add contacts and search focus shortcuts.\n"
+"* Add call tray focus shortcut.\n"
+"* Document focus shortcuts.\n"
+"* Update translation."
+msgstr ""
+"### 2.3\n"
+"\n"
+"* 修复全局搜索结果焦点问题。\n"
+"* 添加共享的微信焦点辅助功能。\n"
+"* 添加聚焦公众号列表的快捷键。\n"
+"* 添加聚焦联系人列表和搜索框的快捷键。\n"
+"* 添加聚焦通话悬浮窗的快捷键。\n"
+"* 将新增的快捷键添加到帮助文档。\n"
+"* 更新翻译。"
