@@ -1,4 +1,4 @@
-### 2.3
+### 2.3.1
 
 * Fix global search result focus.
 * Add shared WeChat focus helpers.

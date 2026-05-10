@@ -26,7 +26,7 @@ addon_info = AddonInfo(
 	addon_version="2.3.1",
 	# Brief changelog for this version
 	# Translators: what's new content for the add-on version to be shown in the add-on store
-	addon_changelog=_("""### 2.3
+	addon_changelog=_("""### 2.3.1
 
 * Fix global search result focus.
 * Add shared WeChat focus helpers.
