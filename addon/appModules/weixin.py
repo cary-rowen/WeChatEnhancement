@@ -417,6 +417,25 @@ class AppModule(appModuleHandler.AppModule):
 			return None
 		return "uiaRuntime", runtimeId
 
+	def _getMessageRecordFromObject(self, obj: UIAObject) -> MessageRecord | None:
+		"""Return a message record from a live UIA message object."""
+		automationId = obj.UIAAutomationId
+		className = obj.UIAElement.CachedClassName
+		if obj.role != controlTypes.Role.LISTITEM or (
+			automationId != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
+		):
+			return None
+		text = obj.name
+		if not text or speech.isBlank(text):
+			return None
+		identity = self._getMessageIdentityFromElement(obj.UIAElement)
+		if identity is None:
+			return None
+		return MessageRecord(
+			identity=identity,
+			text=text,
+		)
+
 	def _collectVisibleMessageRecords(
 		self,
 		messageList: UIAObject,
@@ -684,75 +703,94 @@ class AppModule(appModuleHandler.AppModule):
 			attempt + 1,
 		)
 
-	def event_valueChange(self, obj: NVDAObject, nextHandler: NextHandler) -> None:
-		if not isinstance(obj, UIAObject):
-			return nextHandler()
+	def _getMessageListFromScrollbar(self, obj: UIAObject) -> UIAObject | None:
+		"""Return the message list parent for a WeChat message list scrollbar."""
 		parent = obj.parent
 		if (
 			obj.role != controlTypes.Role.SCROLLBAR
 			or not isinstance(parent, UIAObject)
 			or parent.UIAAutomationId != self.MESSAGE_LIST_UIA_ID
 		):
-			return nextHandler()
+			return None
+		return parent
+
+	def _handleValueChange(self, obj: NVDAObject) -> None:
+		"""Handle WeChat message list value changes."""
+		if not isinstance(obj, UIAObject):
+			return
+		messageList = self._getMessageListFromScrollbar(obj)
+		if messageList is None:
+			return
 		if (
 			self.notificationMode == self.MODE_OFF
 			or self.isNotificationSuppressed
 			or self.isBoundaryScrollPending
 		):
-			return nextHandler()
-		messageList = parent
+			return
 		latestMessage = messageList.lastChild
 		if not isinstance(latestMessage, UIAObject):
-			return nextHandler()
-		automationId = latestMessage.UIAAutomationId
-		className = latestMessage.UIAElement.CachedClassName
-		if latestMessage.role != controlTypes.Role.LISTITEM or (
-			automationId != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
-		):
-			return nextHandler()
-		text = latestMessage.name
-		if not text or speech.isBlank(text):
-			return nextHandler()
-		identity = self._getMessageIdentityFromElement(latestMessage.UIAElement)
-		if identity is None:
-			return nextHandler()
-		messageRecord = MessageRecord(
-			identity=identity,
-			text=text,
-		)
+			return
+		messageRecord = self._getMessageRecordFromObject(latestMessage)
+		if messageRecord is None:
+			return
 		if (
 			self.lastNotifiedMessageRecord is not None
 			and messageRecord.identity == self.lastNotifiedMessageRecord.identity
 		):
-			return nextHandler()
+			return
 		self.refreshMessageQueue(messageList)
 		queueUpdateKind = self.reviewQueueUpdateOnLastRefresh
 		if queueUpdateKind == self.QUEUE_UPDATE_APPEND:
 			playWaveFile(self.SOUND_NEW_MESSAGE)
 			if self.notificationMode == self.MODE_SOUND_AND_SPEECH:
-				ui.message(latestMessage.name)
+				ui.message(messageRecord.text)
 		self.lastNotifiedMessageRecord = messageRecord
+
+	def event_valueChange(self, obj: NVDAObject, nextHandler: NextHandler) -> None:
+		"""Handle value changes without interrupting the NVDA event chain."""
+		try:
+			self._handleValueChange(obj)
+		except Exception:
+			log.debugWarning("Unable to handle a WeChat value change event.", exc_info=True)
 		nextHandler()
 
-	def event_gainFocus(self, obj: NVDAObject, nextHandler: NextHandler) -> None:
-		if not isinstance(obj, UIAObject):
-			return nextHandler()
+	def _getMessageListFromFocusedItem(self, obj: UIAObject) -> UIAObject | None:
+		"""Return the message list parent for a focused WeChat message item."""
 		parent = obj.parent
 		if (
-			obj.role == controlTypes.Role.LISTITEM
-			and isinstance(parent, UIAObject)
-			and parent.UIAAutomationId == self.MESSAGE_LIST_UIA_ID
-			and (
-				obj.UIAAutomationId == self.MESSAGE_ITEM_UIA_ID
-				or obj.UIAElement.CachedClassName == self.MESSAGE_TIME_ITEM_UIA_CLASS
-			)
+			obj.role != controlTypes.Role.LISTITEM
+			or not isinstance(parent, UIAObject)
+			or parent.UIAAutomationId != self.MESSAGE_LIST_UIA_ID
 		):
+			return None
+		if (
+			obj.UIAAutomationId == self.MESSAGE_ITEM_UIA_ID
+			or obj.UIAElement.CachedClassName == self.MESSAGE_TIME_ITEM_UIA_CLASS
+		):
+			return parent
+		return None
+
+	def _handleGainFocus(self, obj: NVDAObject) -> None:
+		"""Refresh WeChat review state for relevant focus changes."""
+		if not isinstance(obj, UIAObject):
+			return
+		messageList = self._getMessageListFromFocusedItem(obj)
+		if messageList is not None:
 			self._suppressNotificationsForUserAction()
-			self.refreshMessageQueue(parent, setNotificationBaseline=True)
-		elif obj.UIAAutomationId == self.MESSAGE_LIST_UIA_ID:
+			self.refreshMessageQueue(messageList, setNotificationBaseline=True)
+			return
+		automationId = obj.UIAAutomationId
+		if automationId == self.MESSAGE_LIST_UIA_ID:
 			self.refreshMessageQueue(obj, setNotificationBaseline=True)
-		elif obj.UIAAutomationId == self.MESSAGE_INPUT_UIA_ID:
+		elif automationId == self.MESSAGE_INPUT_UIA_ID:
 			self.refreshMessageQueue(setNotificationBaseline=True)
+
+	def event_gainFocus(self, obj: NVDAObject, nextHandler: NextHandler) -> None:
+		"""Handle focus gains without interrupting the NVDA event chain."""
+		try:
+			self._handleGainFocus(obj)
+		except Exception:
+			log.debugWarning("Unable to handle a WeChat gain focus event.", exc_info=True)
 		nextHandler()
 
 	def _suppressNotificationsForUserAction(self) -> None:
