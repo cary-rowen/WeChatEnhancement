@@ -39,7 +39,7 @@ addonHandler.initTranslation()
 
 
 ChatIdentity: TypeAlias = tuple[Literal["single", "main"], str]
-MessageIdentity: TypeAlias = tuple[Literal["uia"], str, tuple[int, ...] | None, str]
+MessageIdentity: TypeAlias = tuple[Literal["uiaRuntime"], tuple[int, ...]]
 NextHandler: TypeAlias = Callable[[], None]
 PressedAltKey: TypeAlias = tuple[int, int]
 UIABounds: TypeAlias = tuple[int, int, int, int]
@@ -57,7 +57,7 @@ class MessageRecord(NamedTuple):
 class ReviewState:
 	"""Temporary message review queue state."""
 
-	messages: list[str]
+	messages: list[MessageRecord]
 	currentIndex: int = -1
 
 
@@ -382,7 +382,6 @@ class AppModule(appModuleHandler.AppModule):
 			automationId = element.getCachedPropertyValue(UIA.UIA_AutomationIdPropertyId)
 			className = element.getCachedPropertyValue(UIA.UIA_ClassNamePropertyId)
 			text = element.getCachedPropertyValue(UIA.UIA_NamePropertyId)
-			boundingRectangle = element.getCachedPropertyValue(UIA.UIA_BoundingRectanglePropertyId)
 		except Exception:
 			return None
 		notSupportedValue = UIAHandler.handler.reservedNotSupportedValue
@@ -400,17 +399,23 @@ class AppModule(appModuleHandler.AppModule):
 			text = None
 		if not text or speech.isBlank(text):
 			return None
-		if boundingRectangle == notSupportedValue or not boundingRectangle:
-			location = None
-		else:
-			location = tuple(int(value) for value in boundingRectangle)
-		itemId = automationId or className
-		if not itemId:
+		identity = self._getMessageIdentityFromElement(element)
+		if identity is None:
 			return None
 		return MessageRecord(
-			identity=("uia", itemId, location, text),
+			identity=identity,
 			text=text,
 		)
+
+	def _getMessageIdentityFromElement(self, element: UIA.IUIAutomationElement) -> MessageIdentity | None:
+		"""Return a RuntimeId-based identity for a UIA message element."""
+		try:
+			runtimeId = tuple(int(value) for value in element.getRuntimeId())
+		except Exception:
+			return None
+		if not runtimeId:
+			return None
+		return "uiaRuntime", runtimeId
 
 	def _collectVisibleMessageRecords(
 		self,
@@ -422,7 +427,6 @@ class AppModule(appModuleHandler.AppModule):
 			childrenCacheRequest.addProperty(UIA.UIA_ControlTypePropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_NamePropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_AutomationIdPropertyId)
-			childrenCacheRequest.addProperty(UIA.UIA_BoundingRectanglePropertyId)
 			childrenCacheRequest.addProperty(UIA.UIA_ClassNamePropertyId)
 			childrenCacheRequest.TreeScope = UIAHandler.TreeScope_Children
 			cachedChildren = messageListElement.buildUpdatedCache(
@@ -439,25 +443,34 @@ class AppModule(appModuleHandler.AppModule):
 				records.append(record)
 		return records
 
-	def _findSubList(self, source: list[str], target: list[str]) -> int | None:
+	def _doMessageRecordListsMatch(self, source: list[MessageRecord], target: list[MessageRecord]) -> bool:
+		"""Return whether two message lists have the same RuntimeId sequence."""
+		if len(source) != len(target):
+			return False
+		return all(
+			sourceRecord.identity == targetRecord.identity
+			for sourceRecord, targetRecord in zip(source, target)
+		)
+
+	def _findSubList(self, source: list[MessageRecord], target: list[MessageRecord]) -> int | None:
 		if not target or len(target) > len(source):
 			return None
 		for index in range(len(source) - len(target) + 1):
-			if source[index : index + len(target)] == target:
+			if self._doMessageRecordListsMatch(source[index : index + len(target)], target):
 				return index
 		return None
 
-	def _getSuffixPrefixOverlap(self, left: list[str], right: list[str]) -> int:
+	def _getSuffixPrefixOverlap(self, left: list[MessageRecord], right: list[MessageRecord]) -> int:
 		maxOverlap = min(len(left), len(right))
 		for count in range(maxOverlap, 0, -1):
-			if left[-count:] == right[:count]:
+			if self._doMessageRecordListsMatch(left[-count:], right[:count]):
 				return count
 		return 0
 
 	def _mergeVisibleMessages(
 		self,
 		state: ReviewState,
-		visibleMessages: list[str],
+		visibleMessages: list[MessageRecord],
 	) -> str:
 		"""Merge visible messages into the temporary queue.
 
@@ -537,8 +550,7 @@ class AppModule(appModuleHandler.AppModule):
 		if not records:
 			return self.reviewState
 		state = self.reviewState
-		visibleMessages = [record.text for record in records]
-		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, visibleMessages)
+		self.reviewQueueUpdateOnLastRefresh = self._mergeVisibleMessages(state, records)
 		if setNotificationBaseline:
 			self.lastNotifiedMessageRecord = records[-1]
 		return state
@@ -593,13 +605,13 @@ class AppModule(appModuleHandler.AppModule):
 		if index < 0 or index >= len(state.messages):
 			return False
 		state.currentIndex = index
-		ui.message(state.messages[index])
+		ui.message(state.messages[index].text)
 		return True
 
 	def _getPreviousBoundaryTargetIndex(
 		self,
 		state: ReviewState,
-		oldMessages: list[str],
+		oldMessages: list[MessageRecord],
 	) -> int | None:
 		oldMessagesStartIndex = self._findSubList(state.messages, oldMessages)
 		if oldMessagesStartIndex is not None and oldMessagesStartIndex > 0:
@@ -608,7 +620,7 @@ class AppModule(appModuleHandler.AppModule):
 
 	def _readAfterPreviousBoundaryScroll(
 		self,
-		oldMessages: list[str],
+		oldMessages: list[MessageRecord],
 		oldIndex: int,
 		nextAttempt: int,
 	) -> None:
@@ -701,11 +713,17 @@ class AppModule(appModuleHandler.AppModule):
 		text = latestMessage.name
 		if not text or speech.isBlank(text):
 			return nextHandler()
+		identity = self._getMessageIdentityFromElement(latestMessage.UIAElement)
+		if identity is None:
+			return nextHandler()
 		messageRecord = MessageRecord(
-			identity=("uia", automationId or className, tuple(latestMessage.location), text),
+			identity=identity,
 			text=text,
 		)
-		if messageRecord == self.lastNotifiedMessageRecord:
+		if (
+			self.lastNotifiedMessageRecord is not None
+			and messageRecord.identity == self.lastNotifiedMessageRecord.identity
+		):
 			return nextHandler()
 		self.refreshMessageQueue(messageList)
 		queueUpdateKind = self.reviewQueueUpdateOnLastRefresh
