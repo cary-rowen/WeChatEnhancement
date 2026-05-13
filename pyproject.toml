@@ -87,9 +87,10 @@ logger-objects = ["logHandler.log"]
 "sconstruct" = ["F821"]
 
 [tool.pyright]
-venvPath = ".venv"
-venv = "."
+venvPath = "../../nvda"
+venv = ".venv"
 pythonPlatform = "Windows"
+stubPath = ".vscode/typings"
 typeCheckingMode = "strict"
 
 include = [
@@ -110,7 +111,8 @@ exclude = [
 # Tell pyright where to load python code from
 extraPaths = [
 	"./addon",
-	"../nvda/source",
+	"../../nvda/source",
+	"../../nvda/miscDeps/python",
 ]
 
 # General config
