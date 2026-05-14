@@ -1,9 +1,4 @@
-### 2.3.1
+### 2.3.3
 
-* Fix global search result focus.
-* Add shared WeChat focus helpers.
-* Add Official Accounts focus shortcut.
-* Add contacts and search focus shortcuts.
-* Add call tray focus shortcut.
-* Document focus shortcuts.
-* Update translation.
+* Guard WeChat UIA event handlers with exception handling.
+* Use UIA RuntimeId as message identity.
