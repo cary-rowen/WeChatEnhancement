@@ -121,23 +121,50 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 
 	def _getDocumentTextAndRangeStartOffset(self) -> tuple[str, int]:
 		"""Return the document text and this range's start offset within it."""
+		documentText, startOffset, _endOffset = self._getDocumentTextAndRangeOffsets()
+		return documentText, startOffset
+
+	def _getDocumentTextAndRangeOffsets(self) -> tuple[str, int, int]:
+		"""Return the document text and this range's offsets within it."""
 		textPattern: Any = getattr(self.obj, "UIATextPattern")
 		documentRange: Any = textPattern.documentRange
 		documentText = self._getTextFromUIARange(documentRange)
 		rangeObj: Any = getattr(self, "_rangeObj")
+		startOffset = self._getOffsetForRangeEndpoint(
+			documentRange,
+			rangeObj,
+			UIAHandler.TextPatternRangeEndpoint_Start,
+			len(documentText),
+		)
+		endOffset = self._getOffsetForRangeEndpoint(
+			documentRange,
+			rangeObj,
+			UIAHandler.TextPatternRangeEndpoint_End,
+			len(documentText),
+		)
+		return documentText, startOffset, endOffset
+
+	def _getOffsetForRangeEndpoint(
+		self,
+		documentRange: Any,
+		rangeObj: Any,
+		endpoint: int,
+		documentLength: int,
+	) -> int:
+		"""Return a document-relative text offset for a UIA range endpoint."""
 		prefixRange: Any = documentRange.clone()
 		prefixRange.MoveEndpointByRange(
 			UIAHandler.TextPatternRangeEndpoint_End,
 			rangeObj,
-			UIAHandler.TextPatternRangeEndpoint_Start,
+			endpoint,
 		)
 		prefixText = self._getTextFromUIARange(prefixRange)
-		return documentText, len(prefixText)
+		return min(max(len(prefixText), 0), documentLength)
 
 	@classmethod
-	def _getLineOffsets(cls, text: str, offset: int) -> tuple[int, int]:
-		"""Return the current line's start and end offsets."""
-		offset = min(max(offset, 0), len(text))
+	def _getLineOffsetEntries(cls, text: str) -> list[tuple[int, int, int]]:
+		"""Return logical line start, content end, and next start offsets."""
+		entries: list[tuple[int, int, int]] = []
 		lineStart = 0
 		for line in text.splitlines(keepends=True):
 			lineEnd = lineStart + len(line)
@@ -147,10 +174,37 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 				lineContentEnd = lineEnd - 1
 			else:
 				lineContentEnd = lineEnd
-			if offset < lineEnd or offset == lineContentEnd:
-				return lineStart, lineContentEnd
+			entries.append((lineStart, lineContentEnd, lineEnd))
 			lineStart = lineEnd
-		return lineStart, len(text)
+		if not entries or text.endswith(("\n", "\r")):
+			entries.append((lineStart, len(text), len(text)))
+		return entries
+
+	@classmethod
+	def _getLineIndexAtOffset(cls, entries: list[tuple[int, int, int]], offset: int) -> int:
+		"""Return the logical line index containing an offset."""
+		for index, (_lineStart, lineContentEnd, nextLineStart) in enumerate(entries):
+			if offset < nextLineStart or offset == lineContentEnd:
+				return index
+		return len(entries) - 1
+
+	@classmethod
+	def _getLineOffsets(cls, text: str, offset: int) -> tuple[int, int]:
+		"""Return the current line's start and end offsets."""
+		offset = min(max(offset, 0), len(text))
+		entries = cls._getLineOffsetEntries(text)
+		lineIndex = cls._getLineIndexAtOffset(entries, offset)
+		lineStart, lineContentEnd, _nextLineStart = entries[lineIndex]
+		return lineStart, lineContentEnd
+
+	@staticmethod
+	def _compareOffsets(firstOffset: int, secondOffset: int) -> int:
+		"""Compare two document offsets using TextInfo endpoint semantics."""
+		if firstOffset < secondOffset:
+			return -1
+		if firstOffset > secondOffset:
+			return 1
+		return 0
 
 	def _setRangeFromDocumentOffsets(self, startOffset: int, endOffset: int) -> None:
 		"""Set this range to document-relative text offsets."""
@@ -173,6 +227,23 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		)
 		self._rangeObj = rangeObj
 
+	def _moveByLogicalLine(self, direction: int) -> int:
+		"""Move by logical lines derived from normalized document text."""
+		documentText, startOffset, _endOffset = self._getDocumentTextAndRangeOffsets()
+		entries = self._getLineOffsetEntries(documentText)
+		currentIndex = self._getLineIndexAtOffset(entries, startOffset)
+		targetIndex = min(max(currentIndex + direction, 0), len(entries) - 1)
+		moved = targetIndex - currentIndex
+		if moved == 0:
+			return 0
+		currentLineStart, currentLineEnd, _currentNextStart = entries[currentIndex]
+		targetLineStart, targetLineEnd, _targetNextStart = entries[targetIndex]
+		column = min(startOffset, currentLineEnd) - currentLineStart
+		targetOffset = min(targetLineStart + column, targetLineEnd)
+		self._setRangeFromDocumentOffsets(targetOffset, targetOffset)
+		self._isAtEndOfText = targetOffset == len(documentText)
+		return moved
+
 	def _expandToLine(self) -> bool:
 		"""Expand to the current logical line, bypassing WeChat's broken UIA line unit."""
 		try:
@@ -190,6 +261,15 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		info = cast(WeChatMessageInputTextInfo, super().copy())
 		info._isAtEndOfText = self._isAtEndOfText
 		return info
+
+	@override
+	def _get_bookmark(self) -> Any:
+		"""Return a bookmark based on logical document offsets."""
+		try:
+			_documentText, startOffset, endOffset = self._getDocumentTextAndRangeOffsets()
+			return startOffset, endOffset
+		except (AttributeError, COMError):
+			return super()._get_bookmark()
 
 	@override
 	def expand(self, unit: str) -> None:
@@ -211,6 +291,11 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		"""Move the range while preserving normal movement from the final insertion point."""
 		if direction == 0:
 			return 0
+		if unit == textInfos.UNIT_LINE and endPoint is None:
+			try:
+				return self._moveByLogicalLine(direction)
+			except (AttributeError, COMError):
+				pass
 		if self._isAtEndOfText and direction < 0:
 			direction += 1
 		self._isAtEndOfText = False
@@ -218,11 +303,40 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			return -1
 		return cast(int, super().move(unit, direction, endPoint=endPoint))
 
+	@override
+	def compareEndPoints(self, other: UIATextInfo, which: str) -> int:
+		"""Compare endpoints using logical offsets for WeChat message input ranges."""
+		if not isinstance(other, WeChatMessageInputTextInfo):
+			return cast(int, super().compareEndPoints(other, which))
+		try:
+			_documentText, selfStartOffset, selfEndOffset = self._getDocumentTextAndRangeOffsets()
+			_otherDocumentText, otherStartOffset, otherEndOffset = other._getDocumentTextAndRangeOffsets()
+		except (AttributeError, COMError):
+			return cast(int, super().compareEndPoints(other, which))
+		selfEndPoint, otherEndPoint = which.split("To")
+		if selfEndPoint == "start":
+			selfOffset = selfStartOffset
+		elif selfEndPoint == "end":
+			selfOffset = selfEndOffset
+		else:
+			raise ValueError(f"bad argument - which: {which}")
+		if otherEndPoint == "Start":
+			otherOffset = otherStartOffset
+		elif otherEndPoint == "End":
+			otherOffset = otherEndOffset
+		else:
+			raise ValueError(f"bad argument - which: {which}")
+		return self._compareOffsets(selfOffset, otherOffset)
+
 
 class WeChatMessageInput(UIAObject):
 	"""Overlay class for the WeChat chat message input field."""
 
 	_TextInfo = WeChatMessageInputTextInfo
+
+	def _get_caretMovementDetectionUsesEvents(self) -> bool:
+		"""Return False because WeChat Qt emits selection events for phantom line movement."""
+		return False
 
 
 class MessageRecord(NamedTuple):
