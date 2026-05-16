@@ -6,17 +6,21 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import TYPE_CHECKING, Any, cast
 
+import eventHandler
 import textInfos
 import UIAHandler
 from comtypes import COMError
+from textInfos.offsets import findEndOfWord, findStartOfWord
 
 from NVDAObjects import NVDAObject
 from NVDAObjects.UIA import UIA as UIAObject
 from NVDAObjects.UIA import UIATextInfo
 
 if TYPE_CHECKING:
+	import inputCore
 	from typing import override
 
 else:
@@ -169,6 +173,23 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		lineStart, lineContentEnd, _nextLineStart = entries[lineIndex]
 		return lineStart, lineContentEnd
 
+	@classmethod
+	def _getWordOffsets(cls, text: str, offset: int) -> tuple[int, int]:
+		"""Return the current logical word's start and end offsets."""
+		if not text:
+			return 0, 0
+		offset = min(max(offset, 0), len(text))
+		if offset >= len(text):
+			return len(text), len(text)
+		lineStart, lineEnd = cls._getLineOffsets(text, offset)
+		if lineStart == lineEnd:
+			return lineStart, lineEnd
+		lineText = text[lineStart:lineEnd].translate({0: " ", 0xA0: " "})
+		relativeOffset = min(max(offset - lineStart, 0), len(lineText) - 1)
+		wordStart = findStartOfWord(lineText, relativeOffset)
+		wordEnd = findEndOfWord(lineText, relativeOffset)
+		return lineStart + wordStart, lineStart + min(wordEnd, len(lineText))
+
 	@staticmethod
 	def _compareOffsets(firstOffset: int, secondOffset: int) -> int:
 		"""Compare two document offsets using TextInfo endpoint semantics."""
@@ -216,6 +237,30 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		self._isAtEndOfText = targetOffset == len(documentText)
 		return moved
 
+	def _snapRedundantNativeWordBoundary(self, direction: int) -> bool:
+		"""Snap from a native Qt word-end stop to the logical word boundary."""
+		documentText, startOffset, endOffset = self._getDocumentTextAndRangeOffsets()
+		if (
+			direction == 0
+			or startOffset != endOffset
+			or startOffset <= 0
+			or startOffset >= len(documentText)
+			or not documentText[startOffset].isspace()
+			or unicodedata.category(documentText[startOffset - 1])[0] not in "LMN"
+		):
+			return False
+		if direction > 0:
+			targetOffset = startOffset
+			while targetOffset < len(documentText) and documentText[targetOffset].isspace():
+				targetOffset += 1
+		else:
+			targetOffset, _wordEnd = self._getWordOffsets(documentText, startOffset - 1)
+		if targetOffset == startOffset:
+			return False
+		self._setRangeFromDocumentOffsets(targetOffset, targetOffset)
+		self._isAtEndOfText = targetOffset == len(documentText)
+		return True
+
 	def _expandToLine(self) -> bool:
 		"""Expand to the current logical line, bypassing WeChat's broken UIA line unit."""
 		try:
@@ -223,6 +268,17 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			lineStart, lineEnd = self._getLineOffsets(documentText, startOffset)
 			self._setRangeFromDocumentOffsets(lineStart, lineEnd)
 			self._isAtEndOfText = lineStart == lineEnd == len(documentText)
+			return True
+		except (AttributeError, COMError):
+			return False
+
+	def _expandToWord(self) -> bool:
+		"""Expand to the current logical word, bypassing WeChat's broken UIA word unit."""
+		try:
+			documentText, startOffset = self._getDocumentTextAndRangeStartOffset()
+			wordStart, wordEnd = self._getWordOffsets(documentText, startOffset)
+			self._setRangeFromDocumentOffsets(wordStart, wordEnd)
+			self._isAtEndOfText = wordStart == wordEnd == len(documentText)
 			return True
 		except (AttributeError, COMError):
 			return False
@@ -247,6 +303,8 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 	def expand(self, unit: str) -> None:
 		"""Expand the range, keeping the final insertion point blank."""
 		if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtEndOfText:
+			return
+		if unit == textInfos.UNIT_WORD and self._expandToWord():
 			return
 		if unit == textInfos.UNIT_LINE and self._expandToLine():
 			return
@@ -309,3 +367,49 @@ class WeChatMessageInput(UIAObject):
 	def _get_caretMovementDetectionUsesEvents(self) -> bool:
 		"""Return False because WeChat Qt emits selection events for phantom line movement."""
 		return False
+
+	def _normalizeCaretAfterNativeWordMovement(
+		self,
+		oldInfo: WeChatMessageInputTextInfo,
+		newInfo: textInfos.TextInfo | None,
+	) -> textInfos.TextInfo | None:
+		"""Return a caret range corrected after WeChat's native word movement."""
+		if not isinstance(newInfo, WeChatMessageInputTextInfo):
+			return newInfo
+		try:
+			_oldDocumentText, oldStartOffset = oldInfo._getDocumentTextAndRangeStartOffset()
+			_documentText, newStartOffset = newInfo._getDocumentTextAndRangeStartOffset()
+		except (AttributeError, COMError, RuntimeError, NotImplementedError):
+			return newInfo
+		if newStartOffset > oldStartOffset:
+			direction = 1
+		elif newStartOffset < oldStartOffset:
+			direction = -1
+		else:
+			return newInfo
+		correctedInfo = newInfo.copy()
+		try:
+			if correctedInfo._snapRedundantNativeWordBoundary(direction):
+				correctedInfo.updateCaret()
+				return correctedInfo
+		except (AttributeError, COMError, RuntimeError, NotImplementedError):
+			return newInfo
+		return newInfo
+
+	def _caretMovementScriptHelper(self, gesture: "inputCore.InputGesture", unit: str) -> None:
+		"""Report caret movement, normalizing WeChat native word boundaries."""
+		if unit != textInfos.UNIT_WORD:
+			super()._caretMovementScriptHelper(gesture, unit)
+			return
+		try:
+			info = self.makeTextInfo(textInfos.POSITION_CARET)
+		except Exception:
+			gesture.send()
+			return
+		bookmark = info.bookmark
+		gesture.send()
+		caretMoved, newInfo = self._hasCaretMoved(bookmark)
+		if not caretMoved and self.shouldFireCaretMovementFailedEvents:
+			eventHandler.executeEvent("caretMovementFailed", self, gesture=gesture)
+		newInfo = self._normalizeCaretAfterNativeWordMovement(info, newInfo)
+		self._caretScriptPostMovedHelper(unit, gesture, newInfo)
