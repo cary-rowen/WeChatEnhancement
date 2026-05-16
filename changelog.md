@@ -1,4 +1,3 @@
-### 2.3.3
+### 2.4.0
 
-* Guard WeChat UIA event handlers with exception handling.
-* Use UIA RuntimeId as message identity.
+* Fixed caret navigation in the WeChat message input field.

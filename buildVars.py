@@ -23,13 +23,12 @@ addon_info = AddonInfo(
 	# Translators: Long description to be shown for this add-on on add-on information from add-on store
 	addon_description=_("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	addon_version="2.3.3",
+	addon_version="2.4.0",
 	# Brief changelog for this version
 	# Translators: what's new content for the add-on version to be shown in the add-on store
-	addon_changelog=_("""### 2.3.3
+	addon_changelog=_("""### 2.4.0
 
-* Guard WeChat UIA event handlers with exception handling.
-* Use UIA RuntimeId as message identity."""),
+* Fixed caret navigation in the WeChat message input field."""),
 	# Author(s)
 	addon_author="Cary-Rowen <manchen_0528@outlook.com>",
 	# URL for the add-on documentation support
@@ -60,7 +59,7 @@ addon_info = AddonInfo(
 # pythonSources = ["addon/globalPlugins/*.py"]
 # For more information on SCons Glob expressions please take a look at:
 # https://scons.org/doc/production/HTML/scons-user/apd.html
-pythonSources: list[str] = ["addon/appModules/weixin.py"]
+pythonSources: list[str] = ["addon/appModules/*.py"]
 
 # Files that contain strings for translation. Usually your python sources
 i18nSources: list[str] = pythonSources + ["buildVars.py"]
