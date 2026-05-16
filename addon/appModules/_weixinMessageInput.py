@@ -9,7 +9,6 @@ from __future__ import annotations
 import unicodedata
 from typing import TYPE_CHECKING, Any, cast
 
-import eventHandler
 import textInfos
 import UIAHandler
 from comtypes import COMError
@@ -363,6 +362,7 @@ class WeChatMessageInput(UIAObject):
 	"""Overlay class for the WeChat chat message input field."""
 
 	_TextInfo = WeChatMessageInputTextInfo
+	_weChatCaretMovementUnit: str | None = None
 
 	def _get_caretMovementDetectionUsesEvents(self) -> bool:
 		"""Return False because WeChat Qt emits selection events for phantom line movement."""
@@ -370,14 +370,13 @@ class WeChatMessageInput(UIAObject):
 
 	def _normalizeCaretAfterNativeWordMovement(
 		self,
-		oldInfo: WeChatMessageInputTextInfo,
+		oldStartOffset: int,
 		newInfo: textInfos.TextInfo | None,
 	) -> textInfos.TextInfo | None:
 		"""Return a caret range corrected after WeChat's native word movement."""
 		if not isinstance(newInfo, WeChatMessageInputTextInfo):
 			return newInfo
 		try:
-			_oldDocumentText, oldStartOffset = oldInfo._getDocumentTextAndRangeStartOffset()
 			_documentText, newStartOffset = newInfo._getDocumentTextAndRangeStartOffset()
 		except (AttributeError, COMError, RuntimeError, NotImplementedError):
 			return newInfo
@@ -396,20 +395,33 @@ class WeChatMessageInput(UIAObject):
 			return newInfo
 		return newInfo
 
-	def _caretMovementScriptHelper(self, gesture: "inputCore.InputGesture", unit: str) -> None:
-		"""Report caret movement, normalizing WeChat native word boundaries."""
-		if unit != textInfos.UNIT_WORD:
-			super()._caretMovementScriptHelper(gesture, unit)
-			return
+	def _hasCaretMoved(
+		self,
+		bookmark: Any,
+		retryInterval: float = 0.01,
+		timeout: float | None = None,
+		origWord: str | None = None,
+	) -> tuple[bool, textInfos.TextInfo | None]:
+		"""Return caret movement, correcting WeChat's native word stops when needed."""
+		caretMoved, newInfo = super()._hasCaretMoved(
+			bookmark,
+			retryInterval=retryInterval,
+			timeout=timeout,
+			origWord=origWord,
+		)
+		if self._weChatCaretMovementUnit != textInfos.UNIT_WORD:
+			return caretMoved, newInfo
 		try:
-			info = self.makeTextInfo(textInfos.POSITION_CARET)
-		except Exception:
-			gesture.send()
-			return
-		bookmark = info.bookmark
-		gesture.send()
-		caretMoved, newInfo = self._hasCaretMoved(bookmark)
-		if not caretMoved and self.shouldFireCaretMovementFailedEvents:
-			eventHandler.executeEvent("caretMovementFailed", self, gesture=gesture)
-		newInfo = self._normalizeCaretAfterNativeWordMovement(info, newInfo)
-		self._caretScriptPostMovedHelper(unit, gesture, newInfo)
+			oldStartOffset, _oldEndOffset = bookmark
+		except (TypeError, ValueError):
+			return caretMoved, newInfo
+		return caretMoved, self._normalizeCaretAfterNativeWordMovement(oldStartOffset, newInfo)
+
+	def _caretMovementScriptHelper(self, gesture: "inputCore.InputGesture", unit: str) -> None:
+		"""Run NVDA's standard caret movement helper with WeChat movement context."""
+		oldUnit = self._weChatCaretMovementUnit
+		self._weChatCaretMovementUnit = unit
+		try:
+			super()._caretMovementScriptHelper(gesture, unit)
+		finally:
+			self._weChatCaretMovementUnit = oldUnit
