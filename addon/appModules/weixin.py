@@ -960,7 +960,7 @@ class AppModule(appModuleHandler.AppModule):
 		# Translators: Description for the command that moves focus to the WeChat search field.
 		description=_("Moves focus to the WeChat search field"),
 		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+s",
+		gesture="kb:alt+g",
 	)
 	def script_focusSearchEdit(self, gesture: inputCore.InputGesture) -> None:
 		"""Move focus to the search edit field in the WeChat main window."""

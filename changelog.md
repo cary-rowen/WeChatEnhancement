@@ -1,7 +1,4 @@
-### 2.4.1
+### 2.4.2
 
-* Fixed word navigation in the WeChat message input field.
-
-### 2.4.0
-
-* Fixed caret navigation in the WeChat message input field.
+* Use standard caret movement flow for WeChat input.
+* Change shortcut: from `Alt+S` to `Alt+G`.
