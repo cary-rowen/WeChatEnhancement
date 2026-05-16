@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from os.path import dirname, join
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, cast
 
 import addonHandler
 import api
@@ -19,21 +19,31 @@ import controlTypes
 import eventHandler
 import mouseHandler
 import speech
+import textInfos
 import ui
 import UIAHandler
 import winUser
 import wx
+from comtypes import COMError
 from comInterfaces import UIAutomationClient as UIA
 
 from logHandler import log
 from NVDAObjects import NVDAObject
 from NVDAObjects.UIA import UIA as UIAObject
+from NVDAObjects.UIA import UIATextInfo
 from nvwave import playWaveFile
 from scriptHandler import script
 from UIAHandler.utils import createUIAMultiPropertyCondition
 
 if TYPE_CHECKING:
 	import inputCore
+	from typing import override
+
+else:
+
+	def override(method: Any) -> Any:
+		"""Return overridden methods unchanged at runtime."""
+		return method
 
 addonHandler.initTranslation()
 
@@ -44,6 +54,175 @@ NextHandler: TypeAlias = Callable[[], None]
 PressedAltKey: TypeAlias = tuple[int, int]
 UIABounds: TypeAlias = tuple[int, int, int, int]
 PositionedUIAObject: TypeAlias = tuple[UIAObject, UIABounds]
+
+
+class WeChatMessageInputTextInfo(UIATextInfo):
+	"""UIA text info for WeChat message input caret navigation."""
+
+	_TEXT_TRANSLATION = str.maketrans({
+		"\u2028": "\n",
+		"\u2029": "\n",
+	})
+	"""Text normalization for line separators exposed by WeChat."""
+
+	_isAtEndOfText = False
+	"""Whether this range is the final collapsed insertion point."""
+
+	def __init__(self, obj: NVDAObject, position: Any, _rangeObj: Any = None) -> None:
+		"""Initialize range state for caret navigation."""
+		super().__init__(obj, position, _rangeObj)
+		self._isAtEndOfText = position == textInfos.POSITION_CARET and self._isAtBrokenDocumentEnd()
+
+	def _isAtBrokenDocumentEnd(self) -> bool:
+		"""Return whether the final insertion point expands to the previous character."""
+		try:
+			rangeObj: Any = getattr(self, "_rangeObj")
+			if (
+				rangeObj.CompareEndpoints(
+					UIAHandler.TextPatternRangeEndpoint_Start,
+					rangeObj,
+					UIAHandler.TextPatternRangeEndpoint_End,
+				)
+				!= 0
+			):
+				return False
+			textPattern: Any = getattr(self.obj, "UIATextPattern")
+			documentRange: Any = textPattern.documentRange
+			if (
+				rangeObj.CompareEndpoints(
+					UIAHandler.TextPatternRangeEndpoint_Start,
+					documentRange,
+					UIAHandler.TextPatternRangeEndpoint_End,
+				)
+				< 0
+			):
+				return False
+			tempRange: Any = rangeObj.clone()
+			tempRange.ExpandToEnclosingUnit(UIAHandler.TextUnit_Character)
+			return (
+				cast(
+					int,
+					rangeObj.CompareEndpoints(
+						UIAHandler.TextPatternRangeEndpoint_Start,
+						tempRange,
+						UIAHandler.TextPatternRangeEndpoint_Start,
+					),
+				)
+				> 0
+			)
+		except (AttributeError, COMError):
+			return False
+
+	@override
+	def _getTextFromUIARange(self, textRange: Any) -> str:
+		"""Return text with WeChat line separators normalized for NVDA speech."""
+		text = super()._getTextFromUIARange(textRange)
+		return text.translate(self._TEXT_TRANSLATION)
+
+	def _getDocumentTextAndRangeStartOffset(self) -> tuple[str, int]:
+		"""Return the document text and this range's start offset within it."""
+		textPattern: Any = getattr(self.obj, "UIATextPattern")
+		documentRange: Any = textPattern.documentRange
+		documentText = self._getTextFromUIARange(documentRange)
+		rangeObj: Any = getattr(self, "_rangeObj")
+		prefixRange: Any = documentRange.clone()
+		prefixRange.MoveEndpointByRange(
+			UIAHandler.TextPatternRangeEndpoint_End,
+			rangeObj,
+			UIAHandler.TextPatternRangeEndpoint_Start,
+		)
+		prefixText = self._getTextFromUIARange(prefixRange)
+		return documentText, len(prefixText)
+
+	@classmethod
+	def _getLineOffsets(cls, text: str, offset: int) -> tuple[int, int]:
+		"""Return the current line's start and end offsets."""
+		offset = min(max(offset, 0), len(text))
+		lineStart = 0
+		for line in text.splitlines(keepends=True):
+			lineEnd = lineStart + len(line)
+			if line.endswith("\r\n"):
+				lineContentEnd = lineEnd - 2
+			elif line.endswith(("\n", "\r")):
+				lineContentEnd = lineEnd - 1
+			else:
+				lineContentEnd = lineEnd
+			if offset < lineEnd or offset == lineContentEnd:
+				return lineStart, lineContentEnd
+			lineStart = lineEnd
+		return lineStart, len(text)
+
+	def _setRangeFromDocumentOffsets(self, startOffset: int, endOffset: int) -> None:
+		"""Set this range to document-relative text offsets."""
+		textPattern: Any = getattr(self.obj, "UIATextPattern")
+		rangeObj: Any = textPattern.documentRange.clone()
+		rangeObj.MoveEndpointByRange(
+			UIAHandler.TextPatternRangeEndpoint_End,
+			rangeObj,
+			UIAHandler.TextPatternRangeEndpoint_Start,
+		)
+		rangeObj.MoveEndpointByUnit(
+			UIAHandler.TextPatternRangeEndpoint_End,
+			UIAHandler.TextUnit_Character,
+			endOffset,
+		)
+		rangeObj.MoveEndpointByUnit(
+			UIAHandler.TextPatternRangeEndpoint_Start,
+			UIAHandler.TextUnit_Character,
+			startOffset,
+		)
+		self._rangeObj = rangeObj
+
+	def _expandToLine(self) -> bool:
+		"""Expand to the current logical line, bypassing WeChat's broken UIA line unit."""
+		try:
+			documentText, startOffset = self._getDocumentTextAndRangeStartOffset()
+			lineStart, lineEnd = self._getLineOffsets(documentText, startOffset)
+			self._setRangeFromDocumentOffsets(lineStart, lineEnd)
+			self._isAtEndOfText = lineStart == lineEnd == len(documentText)
+			return True
+		except (AttributeError, COMError):
+			return False
+
+	@override
+	def copy(self) -> "WeChatMessageInputTextInfo":
+		"""Return a copy preserving the final insertion point state."""
+		info = cast(WeChatMessageInputTextInfo, super().copy())
+		info._isAtEndOfText = self._isAtEndOfText
+		return info
+
+	@override
+	def expand(self, unit: str) -> None:
+		"""Expand the range, keeping the final insertion point blank."""
+		if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtEndOfText:
+			return
+		if unit == textInfos.UNIT_LINE and self._expandToLine():
+			return
+		self._isAtEndOfText = False
+		super().expand(unit)
+
+	@override
+	def move(
+		self,
+		unit: str,
+		direction: int,
+		endPoint: str | None = None,
+	) -> int:
+		"""Move the range while preserving normal movement from the final insertion point."""
+		if direction == 0:
+			return 0
+		if self._isAtEndOfText and direction < 0:
+			direction += 1
+		self._isAtEndOfText = False
+		if direction == 0:
+			return -1
+		return cast(int, super().move(unit, direction, endPoint=endPoint))
+
+
+class WeChatMessageInput(UIAObject):
+	"""Overlay class for the WeChat chat message input field."""
+
+	_TextInfo = WeChatMessageInputTextInfo
 
 
 class MessageRecord(NamedTuple):
@@ -126,6 +305,7 @@ class AppModule(appModuleHandler.AppModule):
 			windowClassName=self.SEARCH_RESULT_WINDOW_CLASS_NAME,
 		)
 
+	@override
 	def terminate(self) -> None:
 		if self.scrollLoadTimer and self.scrollLoadTimer.IsRunning():
 			self.scrollLoadTimer.Stop()
@@ -134,6 +314,24 @@ class AppModule(appModuleHandler.AppModule):
 			self.notificationSuppressionTimer.Stop()
 		self.notificationSuppressionTimer = None
 		super().terminate()
+
+	@override
+	def chooseNVDAObjectOverlayClasses(self, obj: NVDAObject, clsList: list[type[NVDAObject]]) -> None:
+		"""Add WeChat-specific object overlays."""
+		if not isinstance(obj, UIAObject):
+			return
+		if (
+			getattr(obj, "UIAAutomationId", None) != self.MESSAGE_INPUT_UIA_ID
+			or getattr(obj, "UIAFrameworkId", None) != "Qt"
+			or obj.role != controlTypes.Role.EDITABLETEXT
+		):
+			return
+		try:
+			textPattern: Any = getattr(obj, "UIATextPattern", None)
+		except COMError:
+			return
+		if textPattern:
+			clsList.insert(0, WeChatMessageInput)
 
 	def _findMessageListAfterInput(self, inputObj: UIAObject) -> UIAObject | None:
 		try:
