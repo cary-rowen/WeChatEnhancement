@@ -29,10 +29,12 @@ else:
 class WeChatMessageInputTextInfo(UIATextInfo):
 	"""UIA text info for WeChat message input caret navigation."""
 
-	_TEXT_TRANSLATION = str.maketrans({
-		"\u2028": "\n",
-		"\u2029": "\n",
-	})
+	_TEXT_TRANSLATION = str.maketrans(
+		{
+			"\u2028": "\n",
+			"\u2029": "\n",
+		},
+	)
 	"""Text normalization for line separators exposed by WeChat."""
 
 	_isAtEndOfText = False

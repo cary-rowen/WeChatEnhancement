@@ -45,6 +45,7 @@ else:
 		"""Return overridden methods unchanged at runtime."""
 		return method
 
+
 addonHandler.initTranslation()
 
 
