@@ -296,7 +296,7 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 				return self._moveByLogicalLine(direction)
 			except (AttributeError, COMError):
 				pass
-		if direction < 0 and self._isAtBrokenDocumentEnd():
+		if direction < 0 and endPoint is None and self._isAtBrokenDocumentEnd():
 			if unit == textInfos.UNIT_CHARACTER and endPoint is None:
 				try:
 					_documentText, startOffset = self._getDocumentTextAndRangeStartOffset()
