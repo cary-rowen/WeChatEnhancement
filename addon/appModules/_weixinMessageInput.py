@@ -125,7 +125,7 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			endpoint,
 		)
 		prefixText = self._getTextFromUIARange(prefixRange)
-		return min(max(len(prefixText), 0), documentLength)
+		return min(len(prefixText), documentLength)
 
 	@classmethod
 	def _getLineOffsetEntries(cls, text: str) -> list[tuple[int, int, int]]:
@@ -221,8 +221,7 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		"""Snap from a native Qt word-end stop to the logical word boundary."""
 		documentText, startOffset, endOffset = self._getDocumentTextAndRangeOffsets()
 		if (
-			direction == 0
-			or startOffset != endOffset
+			startOffset != endOffset
 			or startOffset <= 0
 			or startOffset >= len(documentText)
 			or not documentText[startOffset].isspace()

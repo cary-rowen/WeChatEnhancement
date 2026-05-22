@@ -183,6 +183,10 @@ class AppModule(appModuleHandler.AppModule):
 			return messageList
 		return None
 
+	def _isMessageItem(self, automationId: Any, className: Any) -> bool:
+		"""Return whether UIA metadata identifies a visible message item."""
+		return automationId == self.MESSAGE_ITEM_UIA_ID or className == self.MESSAGE_TIME_ITEM_UIA_CLASS
+
 	def _getCurrentMessageList(self, focus: UIAObject | None = None) -> UIAObject | None:
 		if focus is None:
 			focus = api.getFocusObject()
@@ -423,7 +427,7 @@ class AppModule(appModuleHandler.AppModule):
 			automationId = None
 		if className == notSupportedValue:
 			className = None
-		if automationId != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS:
+		if not self._isMessageItem(automationId, className):
 			return None
 		if text == notSupportedValue:
 			text = None
@@ -451,9 +455,7 @@ class AppModule(appModuleHandler.AppModule):
 		"""Return a message record from a live UIA message object."""
 		automationId = obj.UIAAutomationId
 		className = obj.UIAElement.CachedClassName
-		if obj.role != controlTypes.Role.LISTITEM or (
-			automationId != self.MESSAGE_ITEM_UIA_ID and className != self.MESSAGE_TIME_ITEM_UIA_CLASS
-		):
+		if obj.role != controlTypes.Role.LISTITEM or not self._isMessageItem(automationId, className):
 			return None
 		text = obj.name
 		if not text or speech.isBlank(text):
@@ -793,10 +795,7 @@ class AppModule(appModuleHandler.AppModule):
 			or parent.UIAAutomationId != self.MESSAGE_LIST_UIA_ID
 		):
 			return None
-		if (
-			obj.UIAAutomationId == self.MESSAGE_ITEM_UIA_ID
-			or obj.UIAElement.CachedClassName == self.MESSAGE_TIME_ITEM_UIA_CLASS
-		):
+		if self._isMessageItem(obj.UIAAutomationId, obj.UIAElement.CachedClassName):
 			return parent
 		return None
 
