@@ -79,10 +79,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		except (AttributeError, COMError):
 			return False
 
-	def _shouldUseLogicalOffsets(self) -> bool:
-		"""Return whether caret movement needs logical offset based comparisons."""
-		return getattr(self.obj, "_weChatCaretMovementUnit", None) is not None
-
 	@override
 	def _getTextFromUIARange(self, textRange: Any) -> str:
 		"""Return text with WeChat line separators normalized for NVDA speech."""
@@ -184,15 +180,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		wordEnd = findEndOfWord(lineText, relativeOffset)
 		return lineStart + wordStart, lineStart + min(wordEnd, len(lineText))
 
-	@staticmethod
-	def _compareOffsets(firstOffset: int, secondOffset: int) -> int:
-		"""Compare two document offsets using TextInfo endpoint semantics."""
-		if firstOffset < secondOffset:
-			return -1
-		if firstOffset > secondOffset:
-			return 1
-		return 0
-
 	def _setRangeFromDocumentOffsets(self, startOffset: int, endOffset: int) -> None:
 		"""Set this range to document-relative text offsets."""
 		textPattern: Any = getattr(self.obj, "UIATextPattern")
@@ -276,7 +263,7 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 	@override
 	def _get_bookmark(self) -> Any:
 		"""Return a bookmark based on logical document offsets."""
-		if not self._shouldUseLogicalOffsets():
+		if getattr(self.obj, "_weChatCaretMovementUnit", None) is None:
 			return super()._get_bookmark()
 		try:
 			_documentText, startOffset, endOffset = self._getDocumentTextAndRangeOffsets()
@@ -315,31 +302,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		if direction == 0:
 			return -1
 		return cast(int, super().move(unit, direction, endPoint=endPoint))
-
-	@override
-	def compareEndPoints(self, other: UIATextInfo, which: str) -> int:
-		"""Compare endpoints using logical offsets for WeChat message input ranges."""
-		if not isinstance(other, WeChatMessageInputTextInfo) or not self._shouldUseLogicalOffsets():
-			return cast(int, super().compareEndPoints(other, which))
-		try:
-			_documentText, selfStartOffset, selfEndOffset = self._getDocumentTextAndRangeOffsets()
-			_otherDocumentText, otherStartOffset, otherEndOffset = other._getDocumentTextAndRangeOffsets()
-		except (AttributeError, COMError):
-			return cast(int, super().compareEndPoints(other, which))
-		selfEndPoint, otherEndPoint = which.split("To")
-		if selfEndPoint == "start":
-			selfOffset = selfStartOffset
-		elif selfEndPoint == "end":
-			selfOffset = selfEndOffset
-		else:
-			raise ValueError(f"bad argument - which: {which}")
-		if otherEndPoint == "Start":
-			otherOffset = otherStartOffset
-		elif otherEndPoint == "End":
-			otherOffset = otherEndOffset
-		else:
-			raise ValueError(f"bad argument - which: {which}")
-		return self._compareOffsets(selfOffset, otherOffset)
 
 
 class WeChatMessageInput(UIAObject):
