@@ -710,7 +710,8 @@ class AppModule(appModuleHandler.AppModule):
 				winUser.setCursorPos(oldX, oldY)
 			except Exception:
 				log.debugWarning(
-					"Unable to restore the cursor after WeChat message list scroll.", exc_info=True
+					"Unable to restore the cursor after WeChat message list scroll.",
+					exc_info=True,
 				)
 		return True
 
