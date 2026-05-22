@@ -23,13 +23,13 @@ addon_info = AddonInfo(
 	# Translators: Long description to be shown for this add-on on add-on information from add-on store
 	addon_description=_("""Enhance the experience of using PC WeChat for NVDA users."""),
 	# version
-	addon_version="2.4.2",
+	addon_version="2.4.3",
 	# Brief changelog for this version
 	# Translators: what's new content for the add-on version to be shown in the add-on store
-	addon_changelog=_("""### 2.4.2
+	addon_changelog=_("""### 2.4.3
 
-* Use standard caret movement flow for WeChat input.
-* Change shortcut: from `Alt+S` to `Alt+G`."""),
+* Improved performance and overall user experience.
+* Fixed potential issues."""),
 	# Author(s)
 	addon_author="Cary-Rowen <manchen_0528@outlook.com>",
 	# URL for the add-on documentation support

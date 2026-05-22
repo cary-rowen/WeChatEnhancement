@@ -1,4 +1,4 @@
-### 2.4.2
+### 2.4.3
 
-* Use standard caret movement flow for WeChat input.
-* Change shortcut: from `Alt+S` to `Alt+G`.
+* Improved performance and overall user experience.
+* Fixed potential issues.
