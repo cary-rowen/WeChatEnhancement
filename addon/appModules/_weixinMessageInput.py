@@ -14,7 +14,6 @@ import UIAHandler
 from comtypes import COMError
 from textInfos.offsets import findEndOfWord, findStartOfWord
 
-from NVDAObjects import NVDAObject
 from NVDAObjects.UIA import UIA as UIAObject
 from NVDAObjects.UIA import UIATextInfo
 
@@ -39,14 +38,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		},
 	)
 	"""Text normalization for line separators exposed by WeChat."""
-
-	_isAtEndOfText = False
-	"""Whether this range is the final collapsed insertion point."""
-
-	def __init__(self, obj: NVDAObject, position: Any, _rangeObj: Any = None) -> None:
-		"""Initialize range state for caret navigation."""
-		super().__init__(obj, position, _rangeObj)
-		self._isAtEndOfText = position == textInfos.POSITION_CARET and self._isAtBrokenDocumentEnd()
 
 	def _isAtBrokenDocumentEnd(self) -> bool:
 		"""Return whether the final insertion point expands to the previous character."""
@@ -87,6 +78,10 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			)
 		except (AttributeError, COMError):
 			return False
+
+	def _shouldUseLogicalOffsets(self) -> bool:
+		"""Return whether caret movement needs logical offset based comparisons."""
+		return getattr(self.obj, "_weChatCaretMovementUnit", None) is not None
 
 	@override
 	def _getTextFromUIARange(self, textRange: Any) -> str:
@@ -233,7 +228,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		column = min(startOffset, currentLineEnd) - currentLineStart
 		targetOffset = min(targetLineStart + column, targetLineEnd)
 		self._setRangeFromDocumentOffsets(targetOffset, targetOffset)
-		self._isAtEndOfText = targetOffset == len(documentText)
 		return moved
 
 	def _snapRedundantNativeWordBoundary(self, direction: int) -> bool:
@@ -257,7 +251,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 		if targetOffset == startOffset:
 			return False
 		self._setRangeFromDocumentOffsets(targetOffset, targetOffset)
-		self._isAtEndOfText = targetOffset == len(documentText)
 		return True
 
 	def _expandToLine(self) -> bool:
@@ -266,7 +259,6 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			documentText, startOffset = self._getDocumentTextAndRangeStartOffset()
 			lineStart, lineEnd = self._getLineOffsets(documentText, startOffset)
 			self._setRangeFromDocumentOffsets(lineStart, lineEnd)
-			self._isAtEndOfText = lineStart == lineEnd == len(documentText)
 			return True
 		except (AttributeError, COMError):
 			return False
@@ -277,21 +269,15 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 			documentText, startOffset = self._getDocumentTextAndRangeStartOffset()
 			wordStart, wordEnd = self._getWordOffsets(documentText, startOffset)
 			self._setRangeFromDocumentOffsets(wordStart, wordEnd)
-			self._isAtEndOfText = wordStart == wordEnd == len(documentText)
 			return True
 		except (AttributeError, COMError):
 			return False
 
 	@override
-	def copy(self) -> "WeChatMessageInputTextInfo":
-		"""Return a copy preserving the final insertion point state."""
-		info = cast(WeChatMessageInputTextInfo, super().copy())
-		info._isAtEndOfText = self._isAtEndOfText
-		return info
-
-	@override
 	def _get_bookmark(self) -> Any:
 		"""Return a bookmark based on logical document offsets."""
+		if not self._shouldUseLogicalOffsets():
+			return super()._get_bookmark()
 		try:
 			_documentText, startOffset, endOffset = self._getDocumentTextAndRangeOffsets()
 			return startOffset, endOffset
@@ -301,13 +287,12 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 	@override
 	def expand(self, unit: str) -> None:
 		"""Expand the range, keeping the final insertion point blank."""
-		if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtEndOfText:
+		if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtBrokenDocumentEnd():
 			return
 		if unit == textInfos.UNIT_WORD and self._expandToWord():
 			return
 		if unit == textInfos.UNIT_LINE and self._expandToLine():
 			return
-		self._isAtEndOfText = False
 		super().expand(unit)
 
 	@override
@@ -325,9 +310,8 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 				return self._moveByLogicalLine(direction)
 			except (AttributeError, COMError):
 				pass
-		if self._isAtEndOfText and direction < 0:
+		if direction < 0 and self._isAtBrokenDocumentEnd():
 			direction += 1
-		self._isAtEndOfText = False
 		if direction == 0:
 			return -1
 		return cast(int, super().move(unit, direction, endPoint=endPoint))
@@ -335,7 +319,7 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 	@override
 	def compareEndPoints(self, other: UIATextInfo, which: str) -> int:
 		"""Compare endpoints using logical offsets for WeChat message input ranges."""
-		if not isinstance(other, WeChatMessageInputTextInfo):
+		if not isinstance(other, WeChatMessageInputTextInfo) or not self._shouldUseLogicalOffsets():
 			return cast(int, super().compareEndPoints(other, which))
 		try:
 			_documentText, selfStartOffset, selfEndOffset = self._getDocumentTextAndRangeOffsets()
@@ -367,6 +351,10 @@ class WeChatMessageInput(UIAObject):
 	def _get_caretMovementDetectionUsesEvents(self) -> bool:
 		"""Return False because WeChat Qt emits selection events for phantom line movement."""
 		return False
+
+	def _reportErrorInPreviousWord(self) -> None:
+		"""Skip per-space spelling probes; WeChat's UIA text ranges make them expensive."""
+		return
 
 	def _normalizeCaretAfterNativeWordMovement(
 		self,
