@@ -46,7 +46,12 @@ else:
 		return method
 
 
-addonHandler.initTranslation()
+try:
+	addonHandler.initTranslation()
+except addonHandler.AddonError:
+	# Scratchpad app modules do not belong to an installed add-on package.
+	# Keep the module loadable for development and live regression testing.
+	pass
 
 
 ChatIdentity: TypeAlias = tuple[Literal["single", "main"], str]
