@@ -28,6 +28,13 @@ else:
 		return method
 
 
+def _isStaleUIATextRangeError(error: BaseException) -> bool:
+	"""Return whether a UIA text range was invalidated by WeChat replacing its control."""
+	return isinstance(error, COMError) or (
+		isinstance(error, ValueError) and "NULL COM pointer access" in str(error)
+	)
+
+
 class WeChatMessageInputTextInfo(UIATextInfo):
 	"""UIA text info for WeChat message input caret navigation."""
 
@@ -273,13 +280,17 @@ class WeChatMessageInputTextInfo(UIATextInfo):
 	@override
 	def expand(self, unit: str) -> None:
 		"""Expand the range, keeping the final insertion point blank."""
-		if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtBrokenDocumentEnd():
-			return
-		if unit == textInfos.UNIT_WORD and self._expandToWord():
-			return
-		if unit == textInfos.UNIT_LINE and self._expandToLine():
-			return
-		super().expand(unit)
+		try:
+			if unit in (textInfos.UNIT_CHARACTER, textInfos.UNIT_WORD) and self._isAtBrokenDocumentEnd():
+				return
+			if unit == textInfos.UNIT_WORD and self._expandToWord():
+				return
+			if unit == textInfos.UNIT_LINE and self._expandToLine():
+				return
+			super().expand(unit)
+		except (COMError, ValueError) as error:
+			if not _isStaleUIATextRangeError(error):
+				raise
 
 	@override
 	def move(
@@ -324,6 +335,14 @@ class WeChatMessageInput(UIAObject):
 	def _reportErrorInPreviousWord(self) -> None:
 		"""Skip per-space spelling probes; WeChat's UIA text ranges make them expensive."""
 		return
+
+	def event_mouseMove(self, x: int, y: int) -> None:
+		"""Ignore mouse events whose UIA text range was invalidated during hit testing."""
+		try:
+			super().event_mouseMove(x, y)
+		except (COMError, ValueError) as error:
+			if not _isStaleUIATextRangeError(error):
+				raise
 
 	def _normalizeCaretAfterNativeWordMovement(
 		self,
