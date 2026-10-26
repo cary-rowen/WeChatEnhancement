@@ -84,7 +84,6 @@ class AppModule(appModuleHandler.AppModule):
 	SESSION_LIST_UIA_CLASS = "mmui::XTableView"
 	CONTACT_LIST_UIA_ID = "primary_table_.contact_list"
 	CONTACT_LIST_UIA_CLASS = "mmui::StickyHeaderRecyclerListView"
-	SEARCH_EDIT_UIA_CLASS = "mmui::XValidatorTextEdit"
 	VOIP_TRAY_WINDOW_UIA_ID = "VOIPTrayWindow"
 	VOIP_TRAY_WINDOW_UIA_CLASS = "mmui::VOIPTrayWindow"
 	SEARCH_RESULT_WINDOW_CLASS_NAME = "Qt51514QWindowToolSaveBits"
@@ -378,14 +377,6 @@ class AppModule(appModuleHandler.AppModule):
 			controlTypes.Role.LIST,
 			self.CONTACT_LIST_UIA_CLASS,
 			self.CONTACT_LIST_UIA_ID,
-		)
-
-	def _findSearchEdit(self) -> UIAObject | None:
-		"""Find the search edit field in the main window."""
-		return self._findMainWindowDescendant(
-			UIA.UIA_EditControlTypeId,
-			controlTypes.Role.EDITABLETEXT,
-			self.SEARCH_EDIT_UIA_CLASS,
 		)
 
 	def _findVoipTrayWindow(self) -> UIAObject | None:
@@ -1039,20 +1030,6 @@ class AppModule(appModuleHandler.AppModule):
 			self._findContactList(),
 			gesture,
 			"Unable to focus the WeChat Contacts list.",
-		)
-
-	@script(
-		# Translators: Description for the command that moves focus to the WeChat search field.
-		description=_("Moves focus to the WeChat search field"),
-		category=SCRIPT_CATEGORY,
-		gesture="kb:alt+g",
-	)
-	def script_focusSearchEdit(self, gesture: inputCore.InputGesture) -> None:
-		"""Move focus to the search edit field in the WeChat main window."""
-		self._focusObjectOrSendGesture(
-			self._findSearchEdit(),
-			gesture,
-			"Unable to focus the WeChat search field.",
 		)
 
 	@script(

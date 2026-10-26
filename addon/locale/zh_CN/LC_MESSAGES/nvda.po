@@ -40,11 +40,6 @@ msgstr "将焦点移动到公众号列表"
 msgid "Moves focus to the WeChat Contacts list"
 msgstr "将焦点移动到通讯录列表"
 
-#. Translators: Description for the command that moves focus to the WeChat search field.
-#: addon\appModules\weixin.py:960
-msgid "Moves focus to the WeChat search field"
-msgstr "将焦点移动到搜索框"
-
 #. Translators: Description for the command that moves focus to the WeChat audio/video call tray window.
 #: addon\appModules\weixin.py:974
 msgid "Moves focus to the WeChat audio/video call tray window"
